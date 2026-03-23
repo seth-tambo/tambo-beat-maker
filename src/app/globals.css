@@ -97,9 +97,9 @@
   --chart-5: oklch(0.62 0.2 313);
 
   /* Tambo Specific Variables needed for tambo components */
-  --container: oklch(0.98 0 247);
-  --backdrop: oklch(0.25 0.07 252 / 0.25);
-  --muted-backdrop: oklch(0.25 0.07 252 / 0.1);
+  --container: oklch(0.18 0.01 160);
+  --backdrop: oklch(0.22 0.015 160 / 0.5);
+  --muted-backdrop: oklch(0.16 0.01 160 / 0.3);
   --radius: 0.5rem;
   --panel-left-width: 500px;
   --panel-right-width: 500px;
@@ -173,4 +173,219 @@ Animated gradient for thinking text, creates a shimmering effect that moves acro
   opacity: 0.5;
   pointer-events: none;
   height: 0;
+}
+
+/* ----------------------------------------------------------------
+   Beat Canvas styles
+   ---------------------------------------------------------------- */
+
+/* Dot grid — size and position are set inline to track camera */
+.beat-canvas .canvas-dots {
+  background-image: radial-gradient(
+    circle,
+    rgba(52, 211, 153, 0.2) 1px,
+    transparent 1px
+  );
+}
+
+/* Beat pad hover lift + skeuomorphic press */
+.beat-canvas .beat-pad {
+  transition: filter 0.15s ease, transform 0.1s ease, box-shadow 0.2s ease;
+  position: relative;
+}
+
+/* Subtle top-to-bottom lighting gradient — simulates light from above */
+.beat-canvas .beat-pad::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.07) 0%,
+    transparent 40%,
+    rgba(0, 0, 0, 0.1) 100%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.beat-canvas .beat-pad:hover {
+  filter: brightness(1.12);
+  transform: translateY(-1px);
+}
+
+.beat-canvas .beat-pad:active {
+  filter: brightness(1.25);
+  transform: translateY(1px);
+}
+
+/* Pressed state inverts the lighting gradient */
+.beat-canvas .beat-pad:active::before {
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.08) 0%,
+    transparent 40%,
+    rgba(255, 255, 255, 0.03) 100%
+  );
+}
+
+/* Tap pulse */
+@keyframes ping-once {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.4);
+  }
+}
+
+.beat-canvas .animate-ping-once {
+  animation: ping-once 200ms ease-out forwards;
+}
+
+/* Chat scrollbar */
+.beat-canvas .chat-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.beat-canvas .chat-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.beat-canvas .chat-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+.beat-canvas .chat-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+/* Piano roll grid scrollbar */
+.beat-canvas .piano-grid-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.beat-canvas .piano-grid-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.beat-canvas .piano-grid-scroll::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.25);
+  border-radius: 3px;
+}
+
+.beat-canvas .piano-grid-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.beat-canvas .piano-grid-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(16, 185, 129, 0.25) transparent;
+}
+
+/* Piano cell hover */
+.beat-canvas .piano-cell:hover {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* ---- Beat chat dark-theme overrides ---- */
+
+/* Input wrapper */
+.beat-chat-input > div {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 0.75rem !important;
+  box-shadow: none !important;
+}
+
+.beat-chat-input [data-slot="message-input-textarea"] {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.beat-chat-input .tiptap {
+  color: rgba(255, 255, 255, 0.9) !important;
+  background: transparent !important;
+  font-size: 0.875rem !important;
+}
+
+.beat-chat-input .tiptap p.is-editor-empty:first-child::before {
+  color: rgba(255, 255, 255, 0.3) !important;
+  opacity: 1 !important;
+}
+
+.beat-chat-input [data-slot="message-input-submit"],
+.beat-chat-input [data-slot="message-input-cancel"] {
+  background: rgba(16, 185, 129, 0.5) !important;
+  color: white !important;
+  border-radius: 0.5rem !important;
+}
+
+.beat-chat-input [data-slot="message-input-submit"]:hover,
+.beat-chat-input [data-slot="message-input-cancel"]:hover {
+  background: rgba(16, 185, 129, 0.75) !important;
+}
+
+/* File / attachment buttons */
+.beat-chat-input [data-slot="message-input-file-button"],
+.beat-chat-input [data-slot="message-input-toolbar"] button {
+  color: rgba(255, 255, 255, 0.4) !important;
+}
+
+.beat-chat-input [data-slot="message-input-toolbar"] button:hover {
+  color: rgba(255, 255, 255, 0.7) !important;
+}
+
+/* Tool call & reasoning — visible on dark bg */
+.beat-canvas [data-slot="toolcall-info"],
+.beat-canvas [data-slot="reasoning-info"] {
+  opacity: 0.65;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.beat-canvas [data-slot="toolcall-info"] button:hover,
+.beat-canvas [data-slot="reasoning-info"] button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Message content text colour */
+.beat-canvas [data-slot="message-content"] {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* Loading dots */
+.beat-canvas [data-slot="message-loading-indicator"] span {
+  background-color: rgba(16, 185, 129, 0.6);
+}
+
+/* ---- Suggestion chip overrides (dark bg) ---- */
+
+[data-slot="message-suggestions-list"] button {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(16, 185, 129, 0.3) !important;
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+[data-slot="message-suggestions-list"] button:hover {
+  background: rgba(16, 185, 129, 0.18) !important;
+  border-color: rgba(16, 185, 129, 0.5) !important;
+  color: #fff !important;
+}
+
+[data-slot="message-suggestions-list"] button:disabled {
+  background: rgba(255, 255, 255, 0.03) !important;
+  color: rgba(255, 255, 255, 0.4) !important;
+}
+
+/* Placeholder shimmer */
+[data-slot="message-suggestions-list"] [data-placeholder-index] {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(255, 255, 255, 0.06) !important;
 }

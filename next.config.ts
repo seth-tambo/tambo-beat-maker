@@ -5,6 +5,10 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  // DO NOT add @strudel/web to transpilePackages — it ships a pre-bundled
+  // dist with internal superdough state. Transpiling it splits the module,
+  // breaking the shared sample registry ("sound bd not found").
+  //
   // Stub optional peer deps from @standard-community/standard-json
   webpack: (config) => {
     config.resolve.alias = {

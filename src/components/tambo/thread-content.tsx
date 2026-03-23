@@ -138,8 +138,8 @@ const ThreadContentMessages = React.forwardRef<
       {filteredMessages.map((message, index) => {
         const messageContentClassName =
           message.role === "assistant"
-            ? "text-foreground font-sans"
-            : "text-foreground bg-container hover:bg-backdrop font-sans";
+            ? "text-white/90"
+            : "text-white/90 bg-white/[0.07] rounded-2xl";
 
         return (
           <div
@@ -161,8 +161,8 @@ const ThreadContentMessages = React.forwardRef<
             >
               <div
                 className={cn(
-                  "flex flex-col",
-                  message.role === "assistant" ? "w-full" : "max-w-3xl",
+                  "flex flex-col gap-0.5",
+                  message.role === "assistant" ? "w-full" : "max-w-[85%]",
                 )}
               >
                 <ReasoningInfo />
