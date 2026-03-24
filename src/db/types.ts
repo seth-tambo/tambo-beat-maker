@@ -14,6 +14,7 @@ export const soundboardPadSchema = z.object({
   size: z.number(),
   notes: z.array(z.string()),
   muted: z.boolean().optional(),
+  bank: z.string().optional(),
 });
 
 export const soundboardDataSchema = z.object({

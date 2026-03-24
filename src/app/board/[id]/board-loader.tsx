@@ -6,6 +6,7 @@ import { ChatSidebar } from "@/components/beat-maker/ChatSidebar";
 import { components, tools, contextHelpers } from "@/lib/tambo";
 import { useAnonymousUserKey } from "@/lib/use-anonymous-user-key";
 import { hydrateFromSoundboard } from "@/lib/canvas-store";
+import { useSoundboardAutosave } from "@/lib/use-soundboard-autosave";
 import { TamboProvider } from "@tambo-ai/react";
 import type { SoundboardData } from "@/db/types";
 
@@ -20,6 +21,10 @@ interface BoardLoaderProps {
 export function BoardLoader({ soundboard }: BoardLoaderProps) {
   const userKey = useAnonymousUserKey();
   const hydrated = useRef(false);
+
+  useSoundboardAutosave({
+    soundboardId: soundboard.id,
+  });
 
   useEffect(() => {
     if (!hydrated.current) {

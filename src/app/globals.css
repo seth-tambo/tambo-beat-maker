@@ -191,7 +191,6 @@ Animated gradient for thinking text, creates a shimmering effect that moves acro
 /* Beat pad hover lift + skeuomorphic press */
 .beat-canvas .beat-pad {
   transition: filter 0.15s ease, transform 0.1s ease, box-shadow 0.2s ease;
-  position: relative;
 }
 
 /* Subtle top-to-bottom lighting gradient — simulates light from above */

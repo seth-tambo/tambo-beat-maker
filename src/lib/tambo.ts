@@ -25,6 +25,7 @@ import {
 import { getCanvasSnapshot } from "@/lib/canvas-store";
 import { StrudelService } from "@/lib/audio-engine";
 import { PATTERN_NAMES } from "@/lib/drum-patterns";
+import { DRUM_BANKS } from "@/lib/sound-map";
 import type { TamboComponent, TamboTool, ContextHelpers } from "@tambo-ai/react";
 import { z } from "zod";
 
@@ -37,19 +38,24 @@ export const tools: TamboTool[] = [
   {
     name: "createBeatPad",
     description:
-      "Create a new beat pad on the canvas. Use a short, descriptive label like 'Bass', 'Snare', 'Kick', 'Lead', 'Synth', etc. Optionally specify a color hint that maps to an existing pad color.",
+      `Create a new beat pad on the canvas. Use a short, descriptive label like 'Kick', 'Snare', 'Hi-Hat', 'Clap', 'Cowbell', 'Shaker', 'Tambourine', 'Conga', 'Bongo', etc. Optionally specify a drum machine bank: ${DRUM_BANKS.join(", ")}. Default is RolandTR808.`,
     tool: createBeatPad,
     inputSchema: z.object({
-      label: z.string().describe("Short name for the pad, e.g. 'Bass', 'Snare'"),
+      label: z.string().describe("Short name for the pad, e.g. 'Kick', 'Snare', 'Cowbell', 'Shaker'"),
       color: z
         .string()
         .optional()
-        .describe("Optional color hint matching an existing color name like 'Kick', 'Snare', 'Hi-Hat'"),
+        .describe("Optional color hint matching an existing color name like 'Kick', 'Snare', 'Hi-Hat', 'Cowbell'"),
+      bank: z
+        .string()
+        .optional()
+        .describe(`Drum machine bank: ${DRUM_BANKS.join(", ")}. Default: RolandTR808`),
     }),
     outputSchema: z.object({
       id: z.string(),
       label: z.string(),
       color: z.string(),
+      bank: z.string().optional(),
       x: z.number(),
       y: z.number(),
     }),
@@ -84,6 +90,7 @@ export const tools: TamboTool[] = [
         x: z.number(),
         y: z.number(),
         muted: z.boolean(),
+        bank: z.string().optional(),
         hasNotes: z.boolean(),
         noteCount: z.number(),
       }),
@@ -177,6 +184,7 @@ export const tools: TamboTool[] = [
     outputSchema: z.object({
       success: z.boolean(),
       patternName: z.string().optional(),
+      bank: z.string().optional(),
       padsCreated: z.number().optional(),
       bpm: z.number().optional(),
       error: z.string().optional(),

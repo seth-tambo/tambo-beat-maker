@@ -25,6 +25,8 @@ export interface BeatPad {
   color: PadColor;
   size: number;
   muted: boolean;
+  /** Drum machine bank name, e.g. "RolandTR808", "RolandTR909" */
+  bank?: string;
 }
 
 export interface CanvasState {
@@ -39,11 +41,21 @@ export interface CanvasState {
   volume: number; // 0–100
 }
 
+interface HistorySnapshot {
+  pads: BeatPad[];
+  padNotes: Map<string, Set<string>>;
+  openRollPadId: string | null;
+  bpm: number;
+  volume: number;
+  padCounter: number;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 export const PAD_COLORS: PadColor[] = [
+  // Core drums
   { bg: "#6d28d9", glow: "#a78bfa", label: "Kick" },
   { bg: "#dc2626", glow: "#f87171", label: "Snare" },
   { bg: "#d97706", glow: "#fbbf24", label: "Hi-Hat" },
@@ -56,6 +68,15 @@ export const PAD_COLORS: PadColor[] = [
   { bg: "#4f46e5", glow: "#818cf8", label: "Open HH" },
   { bg: "#be123c", glow: "#fb7185", label: "Crash" },
   { bg: "#15803d", glow: "#4ade80", label: "Ride" },
+  // Extended percussion
+  { bg: "#b45309", glow: "#f59e0b", label: "Cowbell" },
+  { bg: "#0d9488", glow: "#5eead4", label: "Shaker" },
+  { bg: "#9333ea", glow: "#c084fc", label: "Tambourine" },
+  { bg: "#c2410c", glow: "#fb923c", label: "Conga" },
+  { bg: "#a16207", glow: "#facc15", label: "Bongo" },
+  { bg: "#166534", glow: "#86efac", label: "Maracas" },
+  { bg: "#7e22ce", glow: "#d8b4fe", label: "High Tom" },
+  { bg: "#1d4ed8", glow: "#93c5fd", label: "Low Tom" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -63,6 +84,7 @@ export const PAD_COLORS: PadColor[] = [
 // ---------------------------------------------------------------------------
 
 const STEPS = 32;
+const MAX_HISTORY = 100;
 
 let state: CanvasState = {
   pads: [],
@@ -77,8 +99,71 @@ let state: CanvasState = {
 };
 
 let padCounter = 0;
+const undoStack: HistorySnapshot[] = [];
+const redoStack: HistorySnapshot[] = [];
+let historyTransactionDepth = 0;
+let historyTransactionCaptured = false;
 
 const listeners = new Set<() => void>();
+
+function cloneHistorySnapshot(snapshot: HistorySnapshot): HistorySnapshot {
+  return {
+    pads: snapshot.pads.map((pad) => ({ ...pad })),
+    padNotes: new Map(
+      Array.from(snapshot.padNotes.entries(), ([padId, notes]) => [padId, new Set(notes)]),
+    ),
+    openRollPadId: snapshot.openRollPadId,
+    bpm: snapshot.bpm,
+    volume: snapshot.volume,
+    padCounter: snapshot.padCounter,
+  };
+}
+
+function createHistorySnapshot(from: CanvasState): HistorySnapshot {
+  return cloneHistorySnapshot({
+    pads: from.pads,
+    padNotes: from.padNotes,
+    openRollPadId: from.openRollPadId,
+    bpm: from.bpm,
+    volume: from.volume,
+    padCounter,
+  });
+}
+
+function pushUndoSnapshot(snapshot: HistorySnapshot) {
+  undoStack.push(snapshot);
+  if (undoStack.length > MAX_HISTORY) undoStack.shift();
+}
+
+function recordHistory() {
+  if (historyTransactionDepth > 0) {
+    if (historyTransactionCaptured) return;
+    pushUndoSnapshot(createHistorySnapshot(state));
+    redoStack.length = 0;
+    historyTransactionCaptured = true;
+    return;
+  }
+  pushUndoSnapshot(createHistorySnapshot(state));
+  redoStack.length = 0;
+}
+
+function applyHistorySnapshot(snapshot: HistorySnapshot) {
+  const nextOpenRollPadId =
+    snapshot.openRollPadId && snapshot.pads.some((pad) => pad.id === snapshot.openRollPadId)
+      ? snapshot.openRollPadId
+      : null;
+  padCounter = snapshot.padCounter;
+  state = {
+    ...state,
+    pads: snapshot.pads.map((pad) => ({ ...pad })),
+    padNotes: new Map(
+      Array.from(snapshot.padNotes.entries(), ([padId, notes]) => [padId, new Set(notes)]),
+    ),
+    openRollPadId: nextOpenRollPadId,
+    bpm: snapshot.bpm,
+    volume: snapshot.volume,
+  };
+}
 
 function emit() {
   // Create a new state reference so useSyncExternalStore detects the change
@@ -105,6 +190,7 @@ function getSnapshot(): CanvasState {
 // ---------------------------------------------------------------------------
 
 export function addPad(pad: Omit<BeatPad, "id" | "size" | "muted"> & { id?: string; size?: number; muted?: boolean }): BeatPad {
+  recordHistory();
   const newPad: BeatPad = {
     id: pad.id ?? `pad-${padCounter++}`,
     x: pad.x,
@@ -112,6 +198,7 @@ export function addPad(pad: Omit<BeatPad, "id" | "size" | "muted"> & { id?: stri
     color: pad.color,
     size: pad.size ?? 110,
     muted: false,
+    bank: pad.bank,
   };
   state = { ...state, pads: [...state.pads, newPad] };
   emit();
@@ -121,6 +208,7 @@ export function addPad(pad: Omit<BeatPad, "id" | "size" | "muted"> & { id?: stri
 export function removePad(id: string): boolean {
   const idx = state.pads.findIndex((p) => p.id === id);
   if (idx === -1) return false;
+  recordHistory();
 
   const nextPads = state.pads.filter((p) => p.id !== id);
   const nextNotes = new Map(state.padNotes);
@@ -133,6 +221,9 @@ export function removePad(id: string): boolean {
 }
 
 export function movePad(id: string, x: number, y: number) {
+  const pad = state.pads.find((p) => p.id === id);
+  if (!pad || (pad.x === x && pad.y === y)) return;
+  recordHistory();
   state = {
     ...state,
     pads: state.pads.map((p) => (p.id === id ? { ...p, x, y } : p)),
@@ -141,6 +232,7 @@ export function movePad(id: string, x: number, y: number) {
 }
 
 export function toggleNote(padId: string, noteKey: string) {
+  recordHistory();
   const nextNotes = new Map(state.padNotes);
   const notes = new Set(nextNotes.get(padId) ?? []);
   if (notes.has(noteKey)) notes.delete(noteKey);
@@ -151,6 +243,14 @@ export function toggleNote(padId: string, noteKey: string) {
 }
 
 export function setNotesForPad(padId: string, notes: Set<string>) {
+  const currentNotes = state.padNotes.get(padId) ?? new Set<string>();
+  if (
+    currentNotes.size === notes.size &&
+    Array.from(currentNotes).every((note) => notes.has(note))
+  ) {
+    return;
+  }
+  recordHistory();
   const nextNotes = new Map(state.padNotes);
   nextNotes.set(padId, new Set(notes));
   state = { ...state, padNotes: nextNotes };
@@ -158,6 +258,8 @@ export function setNotesForPad(padId: string, notes: Set<string>) {
 }
 
 export function clearNotesForPad(padId: string) {
+  if (!state.padNotes.has(padId)) return;
+  recordHistory();
   const nextNotes = new Map(state.padNotes);
   nextNotes.delete(padId);
   state = { ...state, padNotes: nextNotes };
@@ -177,6 +279,8 @@ export function closePianoRoll() {
 }
 
 export function clearAllPads() {
+  if (state.pads.length === 0 && state.padNotes.size === 0) return;
+  recordHistory();
   state = {
     pads: [],
     padNotes: new Map(),
@@ -195,6 +299,7 @@ export function clearAllPads() {
 export function bringPadToFront(id: string) {
   const idx = state.pads.findIndex((p) => p.id === id);
   if (idx === -1 || idx === state.pads.length - 1) return;
+  recordHistory();
   const copy = [...state.pads];
   const [moved] = copy.splice(idx, 1);
   copy.push(moved);
@@ -203,6 +308,7 @@ export function bringPadToFront(id: string) {
 }
 
 export function reorderPads(pads: BeatPad[]) {
+  recordHistory();
   state = { ...state, pads };
   emit();
 }
@@ -210,6 +316,7 @@ export function reorderPads(pads: BeatPad[]) {
 export function togglePadMute(id: string): boolean {
   const idx = state.pads.findIndex((p) => p.id === id);
   if (idx === -1) return false;
+  recordHistory();
   state = {
     ...state,
     pads: state.pads.map((p) => (p.id === id ? { ...p, muted: !p.muted } : p)),
@@ -237,9 +344,12 @@ function advanceStep() {
 }
 
 export function setBpm(bpm: number) {
+  const nextBpm = Math.max(30, Math.min(300, bpm));
+  if (state.bpm === nextBpm) return;
+  recordHistory();
   state = {
     ...state,
-    bpm: Math.max(30, Math.min(300, bpm)),
+    bpm: nextBpm,
     // Re-anchor the rAF loop so playhead stays in sync after tempo change
     playStartedAt: state.isPlaying ? Date.now() : null,
     playStartedAtStep: state.currentStep,
@@ -248,8 +358,48 @@ export function setBpm(bpm: number) {
 }
 
 export function setVolume(volume: number) {
-  state = { ...state, volume: Math.max(0, Math.min(100, volume)) };
+  const nextVolume = Math.max(0, Math.min(100, volume));
+  if (state.volume === nextVolume) return;
+  recordHistory();
+  state = { ...state, volume: nextVolume };
   emit();
+}
+
+export function beginHistoryTransaction() {
+  historyTransactionDepth += 1;
+  if (historyTransactionDepth === 1) historyTransactionCaptured = false;
+}
+
+export function endHistoryTransaction() {
+  if (historyTransactionDepth === 0) return;
+  historyTransactionDepth -= 1;
+  if (historyTransactionDepth === 0) historyTransactionCaptured = false;
+}
+
+export function canUndo() {
+  return undoStack.length > 0;
+}
+
+export function canRedo() {
+  return redoStack.length > 0;
+}
+
+export function undo() {
+  const previous = undoStack.pop();
+  if (!previous) return false;
+  redoStack.push(createHistorySnapshot(state));
+  applyHistorySnapshot(previous);
+  emit();
+  return true;
+}
+
+export function redo() {
+  const next = redoStack.pop();
+  if (!next) return false;
+  undoStack.push(createHistorySnapshot(state));
+  applyHistorySnapshot(next);
+  emit();
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +417,7 @@ export function getSerializableState(): SoundboardData {
       size: pad.size,
       notes: Array.from(state.padNotes.get(pad.id) ?? []),
       muted: pad.muted || undefined,
+      bank: pad.bank,
     })),
     bpm: state.bpm,
   };
@@ -274,6 +425,7 @@ export function getSerializableState(): SoundboardData {
 
 /** Replaces all canvas state from a saved soundboard. */
 export function hydrateFromSoundboard(data: SoundboardData) {
+  recordHistory();
   const padNotes = new Map<string, Set<string>>();
   let maxCounter = 0;
 
@@ -297,6 +449,7 @@ export function hydrateFromSoundboard(data: SoundboardData) {
       color: p.color,
       size: p.size,
       muted: p.muted ?? false,
+      bank: p.bank,
     })),
     padNotes,
     openRollPadId: null,
@@ -336,6 +489,7 @@ export function getCanvasSnapshot() {
         x: p.x,
         y: p.y,
         muted: p.muted,
+        bank: p.bank,
         hasNotes: (notes?.size ?? 0) > 0,
         noteCount: notes?.size ?? 0,
         activeSteps,

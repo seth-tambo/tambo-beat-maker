@@ -105,7 +105,10 @@ ThreadContent.displayName = "ThreadContent";
  * Props for the ThreadContentMessages component.
  * Extends standard HTMLDivElement attributes.
  */
-export type ThreadContentMessagesProps = React.HTMLAttributes<HTMLDivElement>;
+export interface ThreadContentMessagesProps
+  extends React.HTMLAttributes<HTMLDivElement> {
+  onMessageCountChange?: (count: number) => void;
+}
 
 /**
  * Renders the list of messages in the thread.
@@ -123,17 +126,22 @@ const ThreadContentMessages = React.forwardRef<
   ThreadContentMessagesProps
 >(({ className, ...props }, ref) => {
   const { messages, isGenerating, variant } = useThreadContentContext();
+  const { onMessageCountChange, ...restProps } = props;
 
   const filteredMessages = messages.filter(
     (message) => message.role !== "system",
   );
+
+  React.useEffect(() => {
+    onMessageCountChange?.(filteredMessages.length);
+  }, [filteredMessages.length, onMessageCountChange]);
 
   return (
     <div
       ref={ref}
       className={cn("flex flex-col gap-2", className)}
       data-slot="thread-content-messages"
-      {...props}
+      {...restProps}
     >
       {filteredMessages.map((message, index) => {
         const messageContentClassName =
@@ -144,8 +152,9 @@ const ThreadContentMessages = React.forwardRef<
         return (
           <div
             key={
-              message.id ??
-              `${message.role}-${message.createdAt ?? `${index}`}-${message.content?.toString().substring(0, 10)}`
+              message.id
+                ? `${message.id}-${index}`
+                : `${message.role}-${message.createdAt ?? index}-${index}`
             }
             data-slot="thread-content-item"
           >

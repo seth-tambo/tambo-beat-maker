@@ -14,9 +14,14 @@ import {
   toggleNote,
   openPianoRoll,
   closePianoRoll,
-  setPlaying,
   setBpm,
   setVolume,
+  beginHistoryTransaction,
+  endHistoryTransaction,
+  undo,
+  redo,
+  canUndo,
+  canRedo,
   getSerializableState,
 } from "@/lib/canvas-store";
 // Audio engine is imported lazily to avoid bundling @strudel/web at build time
@@ -36,12 +41,20 @@ const TRANSPORT_COLOR = { bg: "#065f46", glow: "#34d399" };
 const CONTROL_COLOR = { bg: "#27272a", glow: "#a1a1aa" }; // muted zinc
 const SHARE_COLOR = { bg: "#0c4a6e", glow: "#7dd3fc" }; // light blue
 
-// Strict 4-column grid.  CELL = pad + gap.  Grid is centered at origin.
+// Strict 4-column grid.  CELL = pad + gap.  Grid starts at canvas origin.
 const GRID_GAP = 20;
 const CELL = PAD_SIZE + GRID_GAP; // 130
 const GRID_COLS = 4;
-// Grid origin: top-left of the 4-column block, centered horizontally
-const GRID_LEFT = -(GRID_COLS * CELL - GRID_GAP) / 2; // -250
+const GRID_ROWS = 4;
+const PAD_GRID_START_ROW = 1;
+const PAD_GRID_SLOTS = (GRID_ROWS - PAD_GRID_START_ROW) * GRID_COLS; // 12
+// Grid origin: top-left of the 4-column block at x=0
+const GRID_LEFT = 0;
+const INITIAL_PAD_LEFT = 50;
+const SIDEBAR_WIDTH_MIN = 300;
+const SIDEBAR_WIDTH_MAX = 400;
+const SIDEBAR_WIDTH_RATIO = 0.36;
+const SIDEBAR_RIGHT_GUTTER = 24;
 
 /** Compute the {x,y} for a given (col, row) in the grid. */
 function gridPos(col: number, row: number) {
@@ -68,6 +81,8 @@ export function BeatCanvas() {
   }, []);
 
   const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
+  const hasSetInitialCamera = useRef(false);
+  const hasUserPositionedView = useRef(false);
   const [dragging, setDragging] = useState<
     | { type: "canvas" }
     | { type: "pad"; id: string; offsetX: number; offsetY: number }
@@ -80,27 +95,46 @@ export function BeatCanvas() {
 
   // Sidebar-aware offset: shift canvas origin to center of visible area (left of chat)
   const [sidebarOffset, setSidebarOffset] = useState(0);
+
+  const getSidebarOffset = useCallback((width: number) => {
+    const sidebarWidth = Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_RATIO * width)) + SIDEBAR_RIGHT_GUTTER;
+    return sidebarWidth / 2;
+  }, []);
+
+  const getInitialCamera = useCallback((width: number) => {
+    const centerLeft = width / 2 - getSidebarOffset(width);
+    return {
+      x: INITIAL_PAD_LEFT - centerLeft,
+      y: 0,
+      zoom: 1,
+    };
+  }, [getSidebarOffset]);
+
   useEffect(() => {
     function computeOffset() {
       const w = window.innerWidth;
-      // Mirrors ChatSidebar CSS: w-[min(400px,36vw)] min-w-[300px] + right-6 (24px)
-      const sidebarWidth = Math.max(300, Math.min(400, 0.36 * w)) + 24;
-      setSidebarOffset(sidebarWidth / 2);
+      const nextSidebarOffset = getSidebarOffset(w);
+      setSidebarOffset(nextSidebarOffset);
+      if (!hasSetInitialCamera.current || !hasUserPositionedView.current) {
+        setCamera(getInitialCamera(w));
+        hasSetInitialCamera.current = true;
+      }
     }
     computeOffset();
     window.addEventListener("resize", computeOffset);
     return () => window.removeEventListener("resize", computeOffset);
-  }, []);
+  }, [getInitialCamera, getSidebarOffset]);
 
   // Reset to clean centered state when all pads are removed
   const prevPadCount = useRef(pads.length);
   useEffect(() => {
     if (pads.length === 0 && prevPadCount.current > 0) {
       setTransportPos(DEFAULT_TRANSPORT_POS);
-      setCamera({ x: 0, y: 0, zoom: 1 });
+      setCamera(getInitialCamera(window.innerWidth));
+      hasUserPositionedView.current = false;
     }
     prevPadCount.current = pads.length;
-  }, [pads.length]);
+  }, [pads.length, getInitialCamera]);
 
   // Piano roll position is local UI state (not in the store)
   const [rollPos, setRollPos] = useState<OpenRollPos | null>(null);
@@ -114,9 +148,14 @@ export function BeatCanvas() {
   const [shareName, setShareName] = useState("Untitled Beat");
   const [isSaving, setIsSaving] = useState(false);
   const [copied, setCopied] = useState(false);
+  const canUndoNow = canUndo();
+  const canRedoNow = canRedo();
 
   const lastMouse = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
+  const singleClickTimerRef = useRef<number | null>(null);
+  const padPointerDownRef = useRef<{ id: string; x: number; y: number } | null>(null);
+  const padDraggedRef = useRef(false);
 
   // Keep rollPos.padId in sync with store's openRollPadId
   // If store says open a different pad, update position
@@ -136,6 +175,7 @@ export function BeatCanvas() {
   // --- Canvas dragging ---
   const handleMouseDown = useCallback((e: MouseEvent) => {
     setDragging({ type: "canvas" });
+    hasUserPositionedView.current = true;
     lastMouse.current = { x: e.clientX, y: e.clientY };
     e.preventDefault();
   }, []);
@@ -156,6 +196,9 @@ export function BeatCanvas() {
         offsetX: canvasX - pad.x,
         offsetY: canvasY - pad.y,
       });
+      beginHistoryTransaction();
+      padPointerDownRef.current = { id: padId, x: e.clientX, y: e.clientY };
+      padDraggedRef.current = false;
 
       bringPadToFront(padId);
       e.preventDefault();
@@ -217,6 +260,11 @@ export function BeatCanvas() {
       } else if (dragging.type === "pad") {
         const rect = containerRef.current?.getBoundingClientRect();
         if (!rect) return;
+        const pointerDown = padPointerDownRef.current;
+        if (pointerDown && pointerDown.id === dragging.id) {
+          const moved = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
+          if (moved > 3) padDraggedRef.current = true;
+        }
         const canvasX = (e.clientX - rect.left - rect.width / 2 + sidebarOffset) / camera.zoom - camera.x;
         const canvasY = (e.clientY - rect.top - rect.height / 2) / camera.zoom - camera.y;
         movePad(dragging.id, canvasX - dragging.offsetX, canvasY - dragging.offsetY);
@@ -246,11 +294,14 @@ export function BeatCanvas() {
   );
 
   const handleMouseUp = useCallback(() => {
+    padPointerDownRef.current = null;
+    if (dragging?.type === "pad") endHistoryTransaction();
     setDragging(null);
-  }, []);
+  }, [dragging]);
 
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
+    hasUserPositionedView.current = true;
     const delta = -e.deltaY * 0.001;
     setCamera((c) => ({
       ...c,
@@ -306,9 +357,16 @@ export function BeatCanvas() {
     removePad(padId);
   }, []);
 
-  const handleToggleMute = useCallback((padId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleToggleMute = useCallback((padId: string) => {
     togglePadMute(padId);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (singleClickTimerRef.current !== null) {
+        window.clearTimeout(singleClickTimerRef.current);
+      }
+    };
   }, []);
 
   const hasPianoRoll = (padId: string) => openRollPadId === padId;
@@ -349,9 +407,11 @@ export function BeatCanvas() {
   }, [shareUrl]);
 
   // ---- Organize layout ----
-  // Strict 4×N grid.  Row 0 = transport, rows 1+ = drum pads.
+  // Strict 4x4 primary grid. Row 0 = transport, rows 1-3 = first 12 drum pads.
   const handleOrganize = useCallback(() => {
+    hasUserPositionedView.current = true;
     setIsOrganizing(true);
+    beginHistoryTransaction();
 
     // Row 0: transport controls (always cols 0-3)
     setTransportPos({
@@ -361,34 +421,25 @@ export function BeatCanvas() {
       share: gridPos(3, 0),
     });
 
-    // Rows 1+: drum pads, 4 per row
-    pads.forEach((pad, i) => {
-      const col = i % GRID_COLS;
-      const row = 1 + Math.floor(i / GRID_COLS);
+    // Rows 1-3: drum pads in 4x4 grid. Overflow pads continue below while still snapping to columns.
+    // Use deterministic ordering so repeated organizes always land in the same slots.
+    const sortedPads = [...pads].sort((a, b) =>
+      a.id.localeCompare(b.id, undefined, { numeric: true, sensitivity: "base" }),
+    );
+    sortedPads.forEach((pad, i) => {
+      const inPrimaryGrid = i < PAD_GRID_SLOTS;
+      const slot = inPrimaryGrid ? i : i - PAD_GRID_SLOTS;
+      const col = slot % GRID_COLS;
+      const row = inPrimaryGrid
+        ? PAD_GRID_START_ROW + Math.floor(slot / GRID_COLS)
+        : GRID_ROWS + Math.floor(slot / GRID_COLS);
       const pos = gridPos(col, row);
       movePad(pad.id, pos.x, pos.y);
     });
+    endHistoryTransaction();
 
-    // Fit-to-view: reset pan, auto-zoom
-    const totalRows = 1 + Math.ceil(pads.length / GRID_COLS);
-    const contentW = GRID_COLS * CELL;
-    const contentH = totalRows * CELL;
-
-    const container = containerRef.current;
-    if (container) {
-      const rect = container.getBoundingClientRect();
-      const viewW = rect.width - sidebarOffset * 2;
-      const viewH = rect.height;
-      const margin = 100;
-      const fitZoom = Math.min(
-        (viewW - margin) / contentW,
-        (viewH - margin) / contentH,
-        MAX_ZOOM,
-      );
-      setCamera({ x: 0, y: 0, zoom: Math.max(MIN_ZOOM, fitZoom) });
-    } else {
-      setCamera({ x: 0, y: 0, zoom: 1 });
-    }
+    // Center the view on the organized grid without changing the current zoom level.
+    setCamera((c) => ({ x: 0, y: 0, zoom: c.zoom }));
 
     setTimeout(() => setIsOrganizing(false), 350);
   }, [pads, sidebarOffset]);
@@ -415,18 +466,6 @@ export function BeatCanvas() {
             transformOrigin: "0 0",
           }}
         >
-          {/* Empty state */}
-          {pads.length === 0 && (
-            <div className="absolute -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none">
-              <p className="text-white/30 text-lg font-medium tracking-wide">
-                No pads yet
-              </p>
-              <p className="text-white/20 text-sm mt-1">
-                Use the chat to add beat pads, or double-click a pad to open its piano roll
-              </p>
-            </div>
-          )}
-
           {/* Tether line between pad and its piano roll */}
           <svg
             className="absolute pointer-events-none"
@@ -484,31 +523,32 @@ export function BeatCanvas() {
                 handlePadTap(pad.id);
                 handlePadDragStart(e, pad.id);
               }}
-              onDoubleClick={() => handleOpenPianoRoll(pad.id)}
+              onClick={(e) => {
+                if ((e.target as HTMLElement).closest("button")) return;
+                if (padDraggedRef.current) {
+                  padDraggedRef.current = false;
+                  padPointerDownRef.current = null;
+                  return;
+                }
+                if (e.detail !== 1) return;
+                if (singleClickTimerRef.current !== null) {
+                  window.clearTimeout(singleClickTimerRef.current);
+                }
+                singleClickTimerRef.current = window.setTimeout(() => {
+                  handleToggleMute(pad.id);
+                  singleClickTimerRef.current = null;
+                }, 200);
+              }}
+              onDoubleClick={() => {
+                if (singleClickTimerRef.current !== null) {
+                  window.clearTimeout(singleClickTimerRef.current);
+                  singleClickTimerRef.current = null;
+                }
+                handleOpenPianoRoll(pad.id);
+              }}
             >
               {/* Action button drawer — slides up from bottom on hover */}
               <div className="absolute bottom-1.5 left-0 right-0 flex justify-center gap-1.5 z-[3] opacity-0 translate-y-1 group-hover/pad:opacity-100 group-hover/pad:translate-y-0 transition-all duration-150 ease-out">
-                {/* Mute toggle */}
-                <button
-                  className="w-[22px] h-[22px] rounded-md text-white/60 hover:text-white text-xs flex items-center justify-center cursor-pointer transition-colors"
-                  style={{ backgroundColor: "#111118", boxShadow: "0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)" }}
-                  onMouseDown={(e) => handleToggleMute(pad.id, e)}
-                  title={pad.muted ? "Unmute" : "Mute"}
-                >
-                  {pad.muted ? (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                      <line x1="23" y1="9" x2="17" y2="15" />
-                      <line x1="17" y1="9" x2="23" y2="15" />
-                    </svg>
-                  ) : (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                    </svg>
-                  )}
-                </button>
                 {/* Piano roll */}
                 {!hasPianoRoll(pad.id) && (
                   <button
@@ -518,6 +558,7 @@ export function BeatCanvas() {
                       e.stopPropagation();
                       handleOpenPianoRoll(pad.id);
                     }}
+                    onClick={(e) => e.stopPropagation()}
                     title="Open piano roll"
                   >
                     &#9835;
@@ -528,6 +569,7 @@ export function BeatCanvas() {
                   className="w-[22px] h-[22px] rounded-md text-white/60 hover:bg-red-600 hover:text-white text-sm flex items-center justify-center cursor-pointer transition-colors"
                   style={{ backgroundColor: "#111118", boxShadow: "0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)" }}
                   onMouseDown={(e) => handleRemovePad(pad.id, e)}
+                  onClick={(e) => e.stopPropagation()}
                   title="Remove pad"
                 >
                   &times;
@@ -571,10 +613,8 @@ export function BeatCanvas() {
               const { play, stop } = await getAudioEngine();
               if (isPlaying) {
                 stop();
-                setPlaying(false);
               } else {
                 await play();
-                setPlaying(true);
               }
             }}
           >
@@ -844,6 +884,23 @@ export function BeatCanvas() {
           title="Organize pads into a grid"
         >
           Organize
+        </button>
+        <div className="w-px h-4 bg-white/15 mx-1" />
+        <button
+          onClick={() => undo()}
+          disabled={!canUndoNow}
+          className="text-xs transition-colors px-1 disabled:opacity-40 disabled:cursor-not-allowed text-white/70 hover:text-white cursor-pointer"
+          title="Undo"
+        >
+          Undo
+        </button>
+        <button
+          onClick={() => redo()}
+          disabled={!canRedoNow}
+          className="text-xs transition-colors px-1 disabled:opacity-40 disabled:cursor-not-allowed text-white/70 hover:text-white cursor-pointer"
+          title="Redo"
+        >
+          Redo
         </button>
       </div>
     </>

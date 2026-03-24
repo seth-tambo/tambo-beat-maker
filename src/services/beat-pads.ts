@@ -25,18 +25,29 @@ for (const c of PAD_COLORS) {
 
 // Default step patterns so pads make sound immediately when created
 const DEFAULT_STEPS: Record<string, number[]> = {
-  kick:     [0, 8, 16, 24],
-  snare:    [8, 24],
-  "hi-hat": [0, 4, 8, 12, 16, 20, 24, 28],
-  clap:     [8, 24],
-  tom:      [12, 28],
-  rim:      [4, 12, 20, 28],
-  perc:     [2, 10, 18, 26],
-  fx:       [0, 16],
-  sub:      [0, 16],
-  "open hh":[6, 22],
-  crash:    [0],
-  ride:     [0, 4, 8, 12, 16, 20, 24, 28],
+  kick:       [0, 8, 16, 24],
+  snare:      [8, 24],
+  "hi-hat":   [0, 4, 8, 12, 16, 20, 24, 28],
+  clap:       [8, 24],
+  tom:        [12, 28],
+  "high tom": [12, 28],
+  "low tom":  [4, 20],
+  rim:        [4, 12, 20, 28],
+  perc:       [2, 10, 18, 26],
+  fx:         [0, 16],
+  sub:        [0, 16],
+  "open hh":  [6, 22],
+  crash:      [0],
+  ride:       [0, 4, 8, 12, 16, 20, 24, 28],
+  cowbell:    [0, 4, 8, 12, 16, 20, 24, 28],
+  shaker:     [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30],
+  tambourine: [2, 6, 10, 14, 18, 22, 26, 30],
+  conga:      [2, 8, 14, 18, 24, 30],
+  bongo:      [4, 10, 20, 26],
+  maracas:    [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30],
+  guiro:      [0, 8, 16, 24],
+  cabasa:     [2, 6, 10, 14, 18, 22, 26, 30],
+  "noise hit":[0, 16],
 };
 
 function getDefaultSteps(label: string): number[] {
@@ -70,17 +81,20 @@ const PAD_SIZE = 110;
 const GAP = 20;
 const CELL = PAD_SIZE + GAP; // 130px per grid cell
 const COLS = 4;
+const GRID_ROWS = 4;
+const PAD_START_ROW = 1;
+const MAX_PADS_IN_GRID = (GRID_ROWS - PAD_START_ROW) * COLS; // 12
 
 // Grid origin: aligned with centered transport columns (x=-250,-120,10,140),
-// first row sits one CELL below the transport row (y=-130).
+// first pad row sits one CELL below the transport row.
 const GRID_X = -250;
-const GRID_ROW0_Y = -CELL + CELL; // 0 — directly below transport row at y=-130
+const GRID_ROW0_Y = PAD_START_ROW * CELL; // 130 — row below transport controls
 
 /** Find the next open grid cell, scanning left→right, top→bottom. */
 function nextGridPosition(): { x: number; y: number } {
   const existing = getCanvasSnapshot().pads;
 
-  for (let slot = 0; slot < 200; slot++) {
+  for (let slot = 0; slot < MAX_PADS_IN_GRID; slot++) {
     const col = slot % COLS;
     const row = Math.floor(slot / COLS);
     const cx = GRID_X + col * CELL;
@@ -92,15 +106,18 @@ function nextGridPosition(): { x: number; y: number } {
     if (!occupied) return { x: cx, y: cy };
   }
 
-  // Fallback (200+ pads): just extend the grid
-  return { x: GRID_X, y: GRID_ROW0_Y + 50 * CELL };
+  throw new Error("Maximum of 12 pads reached for the 4x4 organize grid.");
 }
 
 // ---------------------------------------------------------------------------
 // Tools
 // ---------------------------------------------------------------------------
 
-export function createBeatPad(input: { label: string; color?: string }) {
+export function createBeatPad(input: { label: string; color?: string; bank?: string }) {
+  if (getCanvasSnapshot().pads.length >= MAX_PADS_IN_GRID) {
+    throw new Error("Cannot create more than 12 pads. The board uses a strict 4x4 grid.");
+  }
+
   const color = input.color
     ? resolveColor(input.color)
     : resolveColor(input.label);
@@ -109,7 +126,7 @@ export function createBeatPad(input: { label: string; color?: string }) {
   const padColor: PadColor = { ...color, label: input.label };
 
   const { x, y } = nextGridPosition();
-  const pad = addPad({ x, y, color: padColor });
+  const pad = addPad({ x, y, color: padColor, bank: input.bank });
 
   // Set default notes so the pad makes sound immediately
   const defaultSteps = getDefaultSteps(padColor.label);
@@ -123,6 +140,7 @@ export function createBeatPad(input: { label: string; color?: string }) {
     id: pad.id,
     label: pad.color.label,
     color: pad.color.bg,
+    bank: pad.bank,
     x: pad.x,
     y: pad.y,
   };

@@ -42,6 +42,7 @@ const initialSuggestions: Suggestion[] = [
 
 export function ChatSidebar() {
   const [chatMinimized, setChatMinimized] = useState(false);
+  const [hasMessages, setHasMessages] = useState(false);
 
   return (
     <div
@@ -85,12 +86,24 @@ export function ChatSidebar() {
           {/* Messages */}
           <ScrollableMessageContainer className="flex-1 px-3 py-2 min-h-0 chat-scroll">
             <ThreadContent variant="default">
-              <ThreadContentMessages />
+              <ThreadContentMessages
+                onMessageCountChange={(count) => setHasMessages(count > 0)}
+              />
             </ThreadContent>
           </ScrollableMessageContainer>
 
           {/* Suggestions + Input */}
           <div className="shrink-0 px-3 pb-3 pt-2">
+            {!hasMessages && (
+              <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2">
+                <p className="text-[11px] uppercase tracking-widest text-emerald-300/90">
+                  New chat
+                </p>
+                <p className="mt-1 text-xs text-white/70">
+                  Start by adding pads, loading a pattern, or asking me to tweak BPM.
+                </p>
+              </div>
+            )}
             <MessageSuggestions
               maxSuggestions={3}
               initialSuggestions={initialSuggestions}

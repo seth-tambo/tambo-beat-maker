@@ -17,7 +17,7 @@ type StrudelContextValue = {
   isPlaying: boolean;
   isReady: boolean;
   error: string | null;
-  play: () => Promise<void>;
+  play: () => Promise<boolean>;
   stop: () => void;
 };
 

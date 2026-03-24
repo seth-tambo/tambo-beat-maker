@@ -3,7 +3,7 @@
  * These run outside React, calling the audio engine + canvas store directly.
  */
 
-import { setPlaying, setBpm, setNotesForPad, clearAllPads, getState } from "@/lib/canvas-store";
+import { setBpm, setNotesForPad, clearAllPads, getState } from "@/lib/canvas-store";
 import { createBeatPad } from "@/services/beat-pads";
 import { DRUM_PATTERNS, PATTERN_NAMES } from "@/lib/drum-patterns";
 
@@ -15,16 +15,14 @@ const STEPS = 32;
 
 export async function playBeat() {
   const { play } = await import("@/lib/audio-engine");
-  await play();
-  setPlaying(true);
+  const success = await play();
   const { pads, bpm } = getState();
-  return { success: true, bpm, padCount: pads.length };
+  return { success, bpm, padCount: pads.length };
 }
 
 export async function stopBeat() {
   const { stop } = await import("@/lib/audio-engine");
   stop();
-  setPlaying(false);
   return { success: true };
 }
 
@@ -82,10 +80,14 @@ export function addDrumPattern(input: { name: string }) {
   // Clear existing pads
   clearAllPads();
 
-  // Create pads and set their notes
+  // Create pads and set their notes, passing the pattern's bank to each pad
   const createdPads: string[] = [];
   for (const padDef of pattern.pads) {
-    const result = createBeatPad({ label: padDef.label, color: padDef.color });
+    const result = createBeatPad({
+      label: padDef.label,
+      color: padDef.color,
+      bank: pattern.bank,
+    });
     createdPads.push(result.id);
 
     // Set the step pattern
@@ -102,6 +104,7 @@ export function addDrumPattern(input: { name: string }) {
   return {
     success: true,
     patternName: pattern.name,
+    bank: pattern.bank,
     padsCreated: createdPads.length,
     bpm: pattern.bpm,
   };

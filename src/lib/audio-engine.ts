@@ -18,8 +18,8 @@
  */
 "use client";
 
-import { getState, subscribe } from "./canvas-store";
-import { getSoundForLabel } from "./sound-map";
+import { getState, setPlaying, subscribe } from "./canvas-store";
+import { getSoundForLabel, DEFAULT_BANK } from "./sound-map";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -175,8 +175,9 @@ export class StrudelService {
       console.log("[StrudelService] initStrudel complete");
 
       // Capture functions from the ES module exports
-      this._evaluate = strudel.evaluate;
-      this._hush = strudel.hush;
+      // Bind to the module object because Strudel's functions rely on internal context.
+      this._evaluate = strudel.evaluate.bind(strudel);
+      this._hush = strudel.hush.bind(strudel);
 
       console.log(
         "[StrudelService] captured functions — evaluate:",
@@ -192,10 +193,18 @@ export class StrudelService {
       this.isAudioInitialized = true;
       this.notifyStateChange();
 
-      // Subscribe to canvas-store changes for live pattern updates
+      // Subscribe to canvas-store changes for live pattern updates.
+      // Stop immediately when nothing is playable (no pads); debounce otherwise.
       this.unsubscribeFromStore = subscribe(() => {
         if (!this._isPlaying) return;
         if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
+
+        const { pads } = getState();
+        if (pads.length === 0) {
+          this.stop();
+          return;
+        }
+
         this.rebuildTimer = setTimeout(() => this.rebuildAndPlay(), 100);
       });
     } catch (err) {
@@ -213,13 +222,27 @@ export class StrudelService {
     if (typeof window === "undefined") return;
 
     window.addEventListener("unhandledrejection", (event) => {
-      const msg = event.reason?.message ?? String(event.reason);
+      const msg = this.toErrorMessage(event.reason);
       if (this.isSampleError(msg)) {
-        this.captureSchedulerError(event.reason instanceof Error
-          ? event.reason
-          : new Error(msg));
+        this.captureSchedulerError(
+          event.reason instanceof Error ? event.reason : new Error(msg),
+        );
       }
     });
+  }
+
+  private toErrorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    if (typeof error === "string") return error;
+    if (error && typeof error === "object" && "type" in error) {
+      const type = (error as { type?: unknown }).type;
+      if (typeof type === "string" && type.length > 0) {
+        return `Audio engine error event: ${type}`;
+      }
+    }
+
+    const fallback = String(error);
+    return fallback === "[object Event]" ? "Audio engine error event" : fallback;
   }
 
   private isSampleError(msg: string): boolean {
@@ -303,7 +326,8 @@ export class StrudelService {
         slots.push(activeSteps.has(i) ? sound : "~");
       }
 
-      padPatternCodes.push(`s("${slots.join(" ")}").bank("RolandTR808")`);
+      const bank = pad.bank ?? DEFAULT_BANK;
+      padPatternCodes.push(`s("${slots.join(" ")}").bank("${bank}")`);
     }
 
     if (padPatternCodes.length === 0) return null;
@@ -342,18 +366,18 @@ export class StrudelService {
    * Build the pattern from canvas state, evaluate it, and start playback.
    * If preload hasn't been called yet (e.g. tool invocation), does it now.
    */
-  async play(): Promise<void> {
+  async play(): Promise<boolean> {
     if (!this.isAudioInitialized) await this.preload();
     if (!this.isAudioInitialized || !this._evaluate) {
       console.error("[StrudelService] Failed to initialize, cannot play");
-      return;
+      return false;
     }
 
     const code = this.buildPatternCode();
     console.log("[StrudelService] pattern code:", code);
     if (!code) {
       console.warn("[StrudelService] No pattern to play (no pads with notes)");
-      return;
+      return false;
     }
 
     try {
@@ -367,18 +391,26 @@ export class StrudelService {
 
       await this._evaluate(code);
       this._isPlaying = true;
+      setPlaying(true);
       this.notifyStateChange();
       console.log("[StrudelService] playing!");
+      return true;
     } catch (err) {
-      this._lastError = (err as Error).message;
+      this._lastError = this.toErrorMessage(err);
       console.error("[StrudelService] Failed to play pattern:", err);
       this.notifyStateChange();
+      return false;
     }
   }
 
   stop(): void {
     this._isPlaying = false;
     if (this._hush) this._hush();
+    if (this.rebuildTimer) {
+      clearTimeout(this.rebuildTimer);
+      this.rebuildTimer = null;
+    }
+    setPlaying(false);
     this.notifyStateChange();
   }
 

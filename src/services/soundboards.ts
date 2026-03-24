@@ -5,6 +5,21 @@
 
 import { getSerializableState, hydrateFromSoundboard } from "@/lib/canvas-store";
 
+async function extractErrorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await res.json();
+    if (payload && typeof payload === "object" && "error" in payload) {
+      const error = (payload as { error?: unknown }).error;
+      if (typeof error === "string" && error.trim().length > 0) {
+        return error;
+      }
+    }
+  } catch {
+    // Ignore JSON parse failures and use fallback below.
+  }
+  return fallback;
+}
+
 export async function saveSoundboard(input: { name: string }) {
   const data = getSerializableState();
 
@@ -15,7 +30,8 @@ export async function saveSoundboard(input: { name: string }) {
   });
 
   if (!res.ok) {
-    return { id: "", name: input.name, shareUrl: "", error: "Failed to save soundboard" };
+    const error = await extractErrorMessage(res, "Failed to save soundboard");
+    return { id: "", name: input.name, shareUrl: "", error };
   }
 
   const { id, name } = await res.json();
@@ -28,7 +44,9 @@ export async function loadSoundboard(input: { id: string }) {
   const res = await fetch(`/api/soundboards/${input.id}`);
 
   if (!res.ok) {
-    return { success: false, error: "Soundboard not found" };
+    const fallback = res.status === 404 ? "Soundboard not found" : "Failed to load soundboard";
+    const error = await extractErrorMessage(res, fallback);
+    return { success: false, error };
   }
 
   const soundboard = await res.json();
@@ -41,6 +59,8 @@ export async function listSoundboards() {
   const res = await fetch("/api/soundboards");
 
   if (!res.ok) {
+    const error = await extractErrorMessage(res, "Failed to list soundboards");
+    console.error(error);
     return [];
   }
 
