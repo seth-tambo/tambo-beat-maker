@@ -10,6 +10,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Always check the `@tambo-ai/react` package exports for the most up-to-date functionality. The template may not showcase all available features.
 
+## Environment Variables
+
+Copy `example.env.local` to `.env.local` and fill in:
+
+- `NEXT_PUBLIC_TAMBO_API_KEY` (required) -- get one at [tambo.co/dashboard](https://tambo.co/dashboard), or run `npx tambo init`
+- `DATABASE_URL` (required for persistence) -- Postgres connection string
+- `NEXT_PUBLIC_TAMBO_URL` (optional) -- custom Tambo API endpoint
+
 ## Essential Commands
 
 ```bash
@@ -104,6 +112,14 @@ No Tambo generative components are registered (`components` is empty); this proj
 - API routes in `src/app/api/soundboards/*`
 - Client save/load tools in `src/services/soundboards.ts`
 - Share links: `/board/{id}`, loaded server-side before client hydration
+
+## Key Conventions
+
+1. **Treat `canvas-store` as canonical state.** When adding behavior for pads/notes/transport, update `src/lib/canvas-store.ts` first and consume that from both UI and tools. Never duplicate pad or sequence state in component-local state.
+
+2. **Beat sequencing is fixed at 32 steps (sixteenth notes).** Multiple files assume 32-step sequencing (`canvas-store`, `audio-engine`, `PianoRoll`, `grid-constants`). Keep step-index logic aligned (`0..31`) when extending features.
+
+3. **Check `@tambo-ai/react` exports before introducing new patterns.** The template may lag behind the package. Read `node_modules/@tambo-ai/react` for the latest hooks, components, and features.
 
 ## When Working on This Codebase
 

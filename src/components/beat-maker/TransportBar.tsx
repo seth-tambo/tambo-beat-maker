@@ -6,7 +6,8 @@ import {
     useCanvasStore,
     setBpm,
     setVolume,
-    getSerializableState
+    getSerializableState,
+    clearAllPads
 } from '@/lib/canvas-store';
 
 const getAudioEngine = () => import('@/lib/audio-engine');
@@ -24,6 +25,7 @@ export function TransportBar() {
     const [shareName, setShareName] = useState('Untitled Beat');
     const [copied, setCopied] = useState(false);
     const shareDialogRef = useRef<HTMLDialogElement>(null);
+    const clearDialogRef = useRef<HTMLDialogElement>(null);
     const [mounted, setMounted] = useState(false);
 
     useEffect(() => {
@@ -194,6 +196,36 @@ export function TransportBar() {
 
                 <div className="w-px h-6 bg-white/10" />
 
+                {/* Clear */}
+                <button
+                    className={`${btnBase} w-8 h-8`}
+                    disabled={!hasPads}
+                    style={{
+                        backgroundColor: '#7f1d1d',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+                        opacity: !hasPads ? 0.4 : 1,
+                        cursor: !hasPads ? 'not-allowed' : 'pointer'
+                    }}
+                    onClick={() => clearDialogRef.current?.showModal()}
+                    title={!hasPads ? 'No pads to clear' : 'Clear all pads'}
+                >
+                    <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="#fca5a5"
+                        strokeWidth={2}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                </button>
+
+                <div className="w-px h-6 bg-white/10" />
+
                 {/* Play / Pause */}
                 <button
                     className={`${btnBase} w-8 h-8`}
@@ -241,6 +273,71 @@ export function TransportBar() {
                     )}
                 </button>
             </div>
+
+            {/* Clear confirmation dialog */}
+            {mounted &&
+                createPortal(
+                    <dialog
+                        ref={clearDialogRef}
+                        className="backdrop:bg-black/60 bg-[#1a1625] text-white rounded-2xl border border-white/10 p-0 w-[380px] max-w-[90vw] shadow-2xl m-auto"
+                        onClick={(e) => {
+                            if (e.target === clearDialogRef.current)
+                                clearDialogRef.current?.close();
+                        }}
+                    >
+                        <div className="p-6 flex flex-col gap-4">
+                            <div className="flex items-center justify-between">
+                                <h2
+                                    className="text-lg font-bold tracking-wide"
+                                    style={{ color: '#fca5a5' }}
+                                >
+                                    Clear Board
+                                </h2>
+                                <button
+                                    onClick={() =>
+                                        clearDialogRef.current?.close()
+                                    }
+                                    className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/60 hover:text-white transition-colors cursor-pointer"
+                                >
+                                    &times;
+                                </button>
+                            </div>
+
+                            <p className="text-sm text-white/70">
+                                This will remove all pads and their patterns.
+                                You can undo this with the Undo button.
+                            </p>
+
+                            <div className="flex gap-2 justify-end">
+                                <button
+                                    onClick={() =>
+                                        clearDialogRef.current?.close()
+                                    }
+                                    className="px-4 py-2 rounded-lg font-medium text-sm cursor-pointer transition-colors bg-white/10 hover:bg-white/20 text-white/70 hover:text-white"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={async () => {
+                                        const { stop } = await getAudioEngine();
+                                        stop();
+                                        clearAllPads();
+                                        clearDialogRef.current?.close();
+                                    }}
+                                    className="px-4 py-2 rounded-lg font-medium text-sm cursor-pointer transition-colors"
+                                    style={{
+                                        backgroundColor: '#7f1d1d',
+                                        color: '#fca5a5',
+                                        border: '1px solid rgba(252,165,165,0.25)'
+                                    }}
+                                >
+                                    Clear All
+                                </button>
+                            </div>
+                        </div>
+                    </dialog>,
+                    document.body
+                )}
 
             {/* Share dialog */}
             {mounted &&
