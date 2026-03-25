@@ -299,7 +299,7 @@ export const tools: TamboTool[] = [
         outputSchema: z.object({
             summary: z.string()
         })
-    },
+    }
 ];
 
 // ---------------------------------------------------------------------------
@@ -313,7 +313,7 @@ export const components: TamboComponent[] = [];
 // ---------------------------------------------------------------------------
 
 export const contextHelpers: ContextHelpers = {
-    strudelKnowledge: () => STRUDEL_SYSTEM_PROMPT,
+    // strudelKnowledge: () => STRUDEL_SYSTEM_PROMPT,
     canvasState: () => {
         const snapshot = getCanvasSnapshot();
         return {
