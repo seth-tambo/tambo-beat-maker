@@ -4,9 +4,10 @@
  * and React components can read reactively.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useSyncExternalStore } from "react";
 import type { SoundboardData } from "@/db/types";
+import { slotToPosition, positionToSlot, CELL } from "@/lib/grid-constants";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -231,6 +232,23 @@ export function movePad(id: string, x: number, y: number) {
   emit();
 }
 
+/** Atomically swap the positions of two pads (single undo entry). */
+export function swapPads(idA: string, idB: string) {
+  const padA = state.pads.find((p) => p.id === idA);
+  const padB = state.pads.find((p) => p.id === idB);
+  if (!padA || !padB) return;
+  recordHistory();
+  state = {
+    ...state,
+    pads: state.pads.map((p) => {
+      if (p.id === idA) return { ...p, x: padB.x, y: padB.y };
+      if (p.id === idB) return { ...p, x: padA.x, y: padA.y };
+      return p;
+    }),
+  };
+  emit();
+}
+
 export function toggleNote(padId: string, noteKey: string) {
   recordHistory();
   const nextNotes = new Map(state.padNotes);
@@ -338,21 +356,28 @@ export function setPlaying(playing: boolean) {
   emit();
 }
 
-function advanceStep() {
-  state = { ...state, currentStep: (state.currentStep + 1) % STEPS };
-  emit();
-}
-
 export function setBpm(bpm: number) {
   const nextBpm = Math.max(30, Math.min(300, bpm));
   if (state.bpm === nextBpm) return;
   recordHistory();
+
+  let nextStartStep: number;
+  
+  if (state.isPlaying && state.playStartedAt) {
+    const elapsed = Date.now() - state.playStartedAt;
+    const prevStepsPerMs = ((state.bpm / 60) * 4) / 1000;
+    // Calculate current fractional position based on old BPM
+    nextStartStep = (state.playStartedAtStep + elapsed * prevStepsPerMs) % STEPS;
+  } else {
+    // If not playing, use current integer step
+    nextStartStep = state.currentStep;
+  }
+
   state = {
     ...state,
     bpm: nextBpm,
-    // Re-anchor the rAF loop so playhead stays in sync after tempo change
     playStartedAt: state.isPlaying ? Date.now() : null,
-    playStartedAtStep: state.currentStep,
+    playStartedAtStep: nextStartStep,
   };
   emit();
 }
@@ -441,8 +466,29 @@ export function hydrateFromSoundboard(data: SoundboardData) {
 
   padCounter = maxCounter;
 
+  // Auto-fix pad positions: if a pad doesn't align to a valid grid slot,
+  // reassign it to the next empty slot. This handles old data with GRID_X=-250.
+  const usedSlots = new Set<number>();
+  const fixedPads = data.pads.map((p) => {
+    const slot = positionToSlot(p.x, p.y);
+    const expected = slotToPosition(slot);
+    const aligned = Math.abs(p.x - expected.x) < CELL / 4 && Math.abs(p.y - expected.y) < CELL / 4;
+
+    if (aligned && !usedSlots.has(slot)) {
+      usedSlots.add(slot);
+      return { ...p, x: expected.x, y: expected.y }; // snap exactly
+    }
+
+    // Find next empty slot
+    let s = 0;
+    while (usedSlots.has(s)) s++;
+    usedSlots.add(s);
+    const pos = slotToPosition(s);
+    return { ...p, x: pos.x, y: pos.y };
+  });
+
   state = {
-    pads: data.pads.map((p) => ({
+    pads: fixedPads.map((p) => ({
       id: p.id,
       x: p.x,
       y: p.y,
@@ -506,14 +552,29 @@ export function getCanvasSnapshot() {
 // ---------------------------------------------------------------------------
 
 export function usePlaybackTimer() {
-  const { isPlaying, bpm } = useCanvasStore();
+  const { isPlaying, bpm, playStartedAt, playStartedAtStep } =
+    useCanvasStore();
+  const rafRef = useRef<number>(0);
 
   useEffect(() => {
-    if (!isPlaying) return;
-    const intervalMs = (60 / bpm / 4) * 1000; // 16th-note interval
-    const id = setInterval(advanceStep, intervalMs);
-    return () => clearInterval(id);
-  }, [isPlaying, bpm]);
+    if (!isPlaying || playStartedAt === null) return;
+
+    const stepsPerMs = ((bpm / 60) * 4) / 1000;
+
+    function tick() {
+      const elapsed = Date.now() - playStartedAt!;
+      const pos = (playStartedAtStep + elapsed * stepsPerMs) % STEPS;
+      const nextStep = Math.floor(pos);
+      if (nextStep !== state.currentStep) {
+        state = { ...state, currentStep: nextStep };
+        emit();
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    }
+
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [isPlaying, bpm, playStartedAt, playStartedAtStep]);
 }
 
 // ---------------------------------------------------------------------------

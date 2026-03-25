@@ -1,7 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
-import { createPortal } from "react-dom";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import type { MouseEvent } from "react";
 import { PianoRoll } from "./PianoRoll";
 import {
@@ -14,18 +13,21 @@ import {
   toggleNote,
   openPianoRoll,
   closePianoRoll,
-  setBpm,
-  setVolume,
   beginHistoryTransaction,
   endHistoryTransaction,
   undo,
   redo,
   canUndo,
   canRedo,
-  getSerializableState,
 } from "@/lib/canvas-store";
-// Audio engine is imported lazily to avoid bundling @strudel/web at build time
-const getAudioEngine = () => import("@/lib/audio-engine");
+import {
+  PAD_SIZE,
+  GRID_COLS,
+  CELL,
+  slotToPosition,
+  positionToSlot,
+  getOccupiedSlots,
+} from "@/lib/grid-constants";
 
 interface OpenRollPos {
   padId: string;
@@ -35,63 +37,26 @@ interface OpenRollPos {
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 2;
-const PAD_SIZE = 110;
 
-const TRANSPORT_COLOR = { bg: "#065f46", glow: "#34d399" };
-const CONTROL_COLOR = { bg: "#27272a", glow: "#a1a1aa" }; // muted zinc
-const SHARE_COLOR = { bg: "#0c4a6e", glow: "#7dd3fc" }; // light blue
-
-// Strict 4-column grid.  CELL = pad + gap.  Grid starts at canvas origin.
-const GRID_GAP = 20;
-const CELL = PAD_SIZE + GRID_GAP; // 130
-const GRID_COLS = 4;
-const GRID_ROWS = 4;
-const PAD_GRID_START_ROW = 1;
-const PAD_GRID_SLOTS = (GRID_ROWS - PAD_GRID_START_ROW) * GRID_COLS; // 12
-// Grid origin: top-left of the 4-column block at x=0
-const GRID_LEFT = 0;
 const INITIAL_PAD_LEFT = 50;
 const SIDEBAR_WIDTH_MIN = 300;
 const SIDEBAR_WIDTH_MAX = 400;
 const SIDEBAR_WIDTH_RATIO = 0.36;
 const SIDEBAR_RIGHT_GUTTER = 24;
 
-/** Compute the {x,y} for a given (col, row) in the grid. */
-function gridPos(col: number, row: number) {
-  return { x: GRID_LEFT + col * CELL, y: row * CELL };
-}
-
-// Transport always occupies row 0, cols 0-3.
-const DEFAULT_TRANSPORT_POS = {
-  playPause: gridPos(0, 0),
-  bpm: gridPos(1, 0),
-  volume: gridPos(2, 0),
-  share: gridPos(3, 0),
-};
-
 export function BeatCanvas() {
-  const { pads, padNotes, openRollPadId, isPlaying, currentStep, bpm, playStartedAt, playStartedAtStep, volume } = useCanvasStore();
+  const { pads, padNotes, openRollPadId, isPlaying, currentStep } = useCanvasStore();
   usePlaybackTimer();
-
-  const [mounted, setMounted] = useState(false);
-
-  // StrudelProvider handles preload; just track mount state here.
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
   const hasSetInitialCamera = useRef(false);
   const hasUserPositionedView = useRef(false);
   const [dragging, setDragging] = useState<
     | { type: "canvas" }
-    | { type: "pad"; id: string; offsetX: number; offsetY: number }
+    | { type: "pad"; id: string; offsetX: number; offsetY: number; startSlot: number }
     | { type: "pianoroll"; padId: string; offsetX: number; offsetY: number }
-    | { type: "transport"; id: string; offsetX: number; offsetY: number }
     | null
   >(null);
-  const [activePad, setActivePad] = useState<string | null>(null);
-  const [transportPos, setTransportPos] = useState(DEFAULT_TRANSPORT_POS);
 
   // Sidebar-aware offset: shift canvas origin to center of visible area (left of chat)
   const [sidebarOffset, setSidebarOffset] = useState(0);
@@ -101,14 +66,18 @@ export function BeatCanvas() {
     return sidebarWidth / 2;
   }, []);
 
-  const getInitialCamera = useCallback((width: number) => {
-    const centerLeft = width / 2 - getSidebarOffset(width);
+  const getInitialCamera = useCallback(() => {
+    // Center the grid in the viewport
+    // We assume a default visual weight of ~3 rows for the initial view
+    const gridCenterX = (GRID_COLS * CELL) / 2;
+    const gridCenterY = (3 * CELL) / 2;
+
     return {
-      x: INITIAL_PAD_LEFT - centerLeft,
-      y: 0,
+      x: -gridCenterX,
+      y: -gridCenterY,
       zoom: 1,
     };
-  }, [getSidebarOffset]);
+  }, []);
 
   useEffect(() => {
     function computeOffset() {
@@ -116,7 +85,7 @@ export function BeatCanvas() {
       const nextSidebarOffset = getSidebarOffset(w);
       setSidebarOffset(nextSidebarOffset);
       if (!hasSetInitialCamera.current || !hasUserPositionedView.current) {
-        setCamera(getInitialCamera(w));
+        setCamera(getInitialCamera());
         hasSetInitialCamera.current = true;
       }
     }
@@ -129,8 +98,7 @@ export function BeatCanvas() {
   const prevPadCount = useRef(pads.length);
   useEffect(() => {
     if (pads.length === 0 && prevPadCount.current > 0) {
-      setTransportPos(DEFAULT_TRANSPORT_POS);
-      setCamera(getInitialCamera(window.innerWidth));
+      setCamera(getInitialCamera());
       hasUserPositionedView.current = false;
     }
     prevPadCount.current = pads.length;
@@ -139,30 +107,39 @@ export function BeatCanvas() {
   // Piano roll position is local UI state (not in the store)
   const [rollPos, setRollPos] = useState<OpenRollPos | null>(null);
 
-  // Organize animation state
-  const [isOrganizing, setIsOrganizing] = useState(false);
+  // Snap animation state
+  const [isSnapping, setIsSnapping] = useState(false);
 
-  // Share dialog state
-  const shareDialogRef = useRef<HTMLDialogElement>(null);
-  const [shareUrl, setShareUrl] = useState<string | null>(null);
-  const [shareName, setShareName] = useState("Untitled Beat");
-  const [isSaving, setIsSaving] = useState(false);
-  const [copied, setCopied] = useState(false);
+  // Track which slot the cursor is hovering during a pad drag
+  const [hoverSlot, setHoverSlot] = useState<number | null>(null);
+
   const canUndoNow = canUndo();
   const canRedoNow = canRedo();
 
   const lastMouse = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
-  const singleClickTimerRef = useRef<number | null>(null);
   const padPointerDownRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const padDraggedRef = useRef(false);
 
+  // Occupied slots map (slot index -> pad ID)
+  const occupiedSlots = useMemo(() => getOccupiedSlots(pads), [pads]);
+
+  // Ghost slots: show enough rows for all pads + 1 extra row
+  const ghostSlotCount = useMemo(() => {
+    const highestOccupied = pads.length > 0
+      ? Math.max(...pads.map((p) => positionToSlot(p.x, p.y)))
+      : -1;
+    const minSlots = GRID_COLS * 2; // at least 2 rows
+    const needed = highestOccupied + GRID_COLS + 1; // one extra row
+    const total = Math.max(minSlots, needed);
+    // Round up to full row
+    return Math.ceil(total / GRID_COLS) * GRID_COLS;
+  }, [pads]);
+
   // Keep rollPos.padId in sync with store's openRollPadId
-  // If store says open a different pad, update position
   const effectiveRollPos = (() => {
     if (!openRollPadId) return null;
     if (rollPos && rollPos.padId === openRollPadId) return rollPos;
-    // Store opened a pad we don't have a position for — compute one
     const pad = pads.find((p) => p.id === openRollPadId);
     if (!pad) return null;
     return {
@@ -171,6 +148,45 @@ export function BeatCanvas() {
       y: pad.y - 50,
     };
   })();
+
+  const activeRollPad = useMemo(
+    () =>
+      effectiveRollPos
+        ? pads.find((p) => p.id === effectiveRollPos.padId) ?? null
+        : null,
+    [effectiveRollPos, pads],
+  );
+
+  const ghostSlots = useMemo(
+    () =>
+      Array.from({ length: ghostSlotCount }, (_, i) => {
+        const pos = slotToPosition(i);
+        const isOccupied = occupiedSlots.has(i);
+        const isHover = hoverSlot === i && dragging?.type === "pad";
+        if (isOccupied && !isHover) return null;
+        return (
+          <div
+            key={`ghost-${i}`}
+            className="absolute rounded-xl pointer-events-none"
+            style={{
+              left: pos.x,
+              top: pos.y,
+              width: PAD_SIZE,
+              height: PAD_SIZE,
+              border: isHover
+                ? "2px solid rgba(16,185,129,0.35)"
+                : "1px dashed rgba(255,255,255,0.06)",
+              backgroundColor: isHover
+                ? "rgba(16,185,129,0.08)"
+                : "transparent",
+              zIndex: 0,
+              transition: "border-color 0.1s, background-color 0.1s",
+            }}
+          />
+        );
+      }),
+    [ghostSlotCount, occupiedSlots, hoverSlot, dragging?.type],
+  );
 
   // --- Canvas dragging ---
   const handleMouseDown = useCallback((e: MouseEvent) => {
@@ -195,12 +211,12 @@ export function BeatCanvas() {
         id: padId,
         offsetX: canvasX - pad.x,
         offsetY: canvasY - pad.y,
+        startSlot: positionToSlot(pad.x, pad.y),
       });
       beginHistoryTransaction();
       padPointerDownRef.current = { id: padId, x: e.clientX, y: e.clientY };
       padDraggedRef.current = false;
 
-      bringPadToFront(padId);
       e.preventDefault();
       e.stopPropagation();
     },
@@ -229,25 +245,6 @@ export function BeatCanvas() {
     [effectiveRollPos, camera, sidebarOffset],
   );
 
-  const handleTransportDragStart = useCallback(
-    (e: MouseEvent, id: "playPause" | "bpm" | "volume" | "share") => {
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const canvasX = (e.clientX - rect.left - rect.width / 2 + sidebarOffset) / camera.zoom - camera.x;
-      const canvasY = (e.clientY - rect.top - rect.height / 2) / camera.zoom - camera.y;
-      const pos = transportPos[id];
-      setDragging({
-        type: "transport",
-        id,
-        offsetX: canvasX - pos.x,
-        offsetY: canvasY - pos.y,
-      });
-      e.preventDefault();
-      e.stopPropagation();
-    },
-    [camera, transportPos, sidebarOffset],
-  );
-
   const handleMouseMove = useCallback(
     (e: MouseEvent) => {
       if (!dragging) return;
@@ -263,11 +260,18 @@ export function BeatCanvas() {
         const pointerDown = padPointerDownRef.current;
         if (pointerDown && pointerDown.id === dragging.id) {
           const moved = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
-          if (moved > 3) padDraggedRef.current = true;
+          if (moved > 8 && !padDraggedRef.current) {
+            padDraggedRef.current = true;
+            bringPadToFront(dragging.id);
+          }
         }
         const canvasX = (e.clientX - rect.left - rect.width / 2 + sidebarOffset) / camera.zoom - camera.x;
         const canvasY = (e.clientY - rect.top - rect.height / 2) / camera.zoom - camera.y;
-        movePad(dragging.id, canvasX - dragging.offsetX, canvasY - dragging.offsetY);
+        const newX = canvasX - dragging.offsetX;
+        const newY = canvasY - dragging.offsetY;
+        movePad(dragging.id, newX, newY);
+        // Update hover slot for ghost highlight
+        setHoverSlot(positionToSlot(newX + PAD_SIZE / 2, newY + PAD_SIZE / 2));
       } else if (dragging.type === "pianoroll") {
         const rect = containerRef.current?.getBoundingClientRect();
         if (!rect) return;
@@ -278,16 +282,6 @@ export function BeatCanvas() {
             ? { ...prev, x: canvasX - dragging.offsetX, y: canvasY - dragging.offsetY }
             : prev,
         );
-      } else if (dragging.type === "transport") {
-        const rect = containerRef.current?.getBoundingClientRect();
-        if (!rect) return;
-        const canvasX = (e.clientX - rect.left - rect.width / 2 + sidebarOffset) / camera.zoom - camera.x;
-        const canvasY = (e.clientY - rect.top - rect.height / 2) / camera.zoom - camera.y;
-        const id = dragging.id as "playPause" | "bpm" | "volume" | "share";
-        setTransportPos((prev) => ({
-          ...prev,
-          [id]: { x: canvasX - dragging.offsetX, y: canvasY - dragging.offsetY },
-        }));
       }
     },
     [dragging, camera, sidebarOffset],
@@ -295,33 +289,50 @@ export function BeatCanvas() {
 
   const handleMouseUp = useCallback(() => {
     padPointerDownRef.current = null;
-    if (dragging?.type === "pad") endHistoryTransaction();
+    setHoverSlot(null);
+
+    if (dragging?.type === "pad") {
+      const pad = pads.find((p) => p.id === dragging.id);
+      if (pad && padDraggedRef.current) {
+        // Snap to nearest grid slot
+        const targetSlot = positionToSlot(pad.x + PAD_SIZE / 2, pad.y + PAD_SIZE / 2);
+        const occupantId = occupiedSlots.get(targetSlot);
+
+        if (occupantId && occupantId !== dragging.id) {
+          // Slot is occupied by another pad: swap them
+          const targetPos = slotToPosition(targetSlot);
+          movePad(dragging.id, targetPos.x, targetPos.y);
+          const startPos = slotToPosition(dragging.startSlot);
+          movePad(occupantId, startPos.x, startPos.y);
+        } else {
+          // Snap to the target slot
+          const pos = slotToPosition(targetSlot);
+          movePad(dragging.id, pos.x, pos.y);
+        }
+
+        // Animate the snap
+        setIsSnapping(true);
+        setTimeout(() => setIsSnapping(false), 180);
+      }
+      endHistoryTransaction();
+    }
+
     setDragging(null);
-  }, [dragging]);
+  }, [dragging, pads, occupiedSlots]);
 
-  const handleWheel = useCallback((e: WheelEvent) => {
-    e.preventDefault();
-    hasUserPositionedView.current = true;
-    const delta = -e.deltaY * 0.001;
-    setCamera((c) => ({
-      ...c,
-      zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, c.zoom + delta * c.zoom)),
-    }));
-  }, []);
-
-  // Attach wheel listener with { passive: false } so preventDefault() works
+  // Prevent default scroll/zoom on the canvas (zoom is buttons-only)
+  // but allow scrolling inside the piano roll
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    el.addEventListener("wheel", handleWheel, { passive: false });
-    return () => el.removeEventListener("wheel", handleWheel);
-  }, [handleWheel]);
-
-  // --- Pad tap (visual pulse) ---
-  const handlePadTap = useCallback((padId: string) => {
-    setActivePad(padId);
-    setTimeout(() => setActivePad(null), 150);
+    const prevent = (e: WheelEvent) => {
+      if ((e.target as HTMLElement).closest(".piano-grid-scroll")) return;
+      e.preventDefault();
+    };
+    el.addEventListener("wheel", prevent, { passive: false });
+    return () => el.removeEventListener("wheel", prevent);
   }, []);
+
 
   // --- Piano roll management ---
   const handleOpenPianoRoll = useCallback(
@@ -361,88 +372,30 @@ export function BeatCanvas() {
     togglePadMute(padId);
   }, []);
 
-  useEffect(() => {
-    return () => {
-      if (singleClickTimerRef.current !== null) {
-        window.clearTimeout(singleClickTimerRef.current);
-      }
-    };
-  }, []);
 
   const hasPianoRoll = (padId: string) => openRollPadId === padId;
 
-  const handleShareClick = useCallback(async () => {
-    if (isSaving) return;
-    setIsSaving(true);
-    setCopied(false);
-    setShareUrl(null);
-
-    try {
-      const data = getSerializableState();
-      const res = await fetch("/api/soundboards", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: shareName, data }),
-      });
-
-      if (!res.ok) throw new Error("Failed to save");
-
-      const { id } = await res.json();
-      const url = `${window.location.origin}/board/${id}`;
-      setShareUrl(url);
-      shareDialogRef.current?.showModal();
-    } catch {
-      // If save fails, still open dialog to show error state
-      shareDialogRef.current?.showModal();
-    } finally {
-      setIsSaving(false);
-    }
-  }, [isSaving, shareName]);
-
-  const handleCopyLink = useCallback(async () => {
-    if (!shareUrl) return;
-    await navigator.clipboard.writeText(shareUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }, [shareUrl]);
-
-  // ---- Organize layout ----
-  // Strict 4x4 primary grid. Row 0 = transport, rows 1-3 = first 12 drum pads.
-  const handleOrganize = useCallback(() => {
+  // ---- Sort layout ----
+  // Pads are always on-grid, so sort just reorders them alphabetically by label.
+  const handleSort = useCallback(() => {
     hasUserPositionedView.current = true;
-    setIsOrganizing(true);
+    setIsSnapping(true);
     beginHistoryTransaction();
 
-    // Row 0: transport controls (always cols 0-3)
-    setTransportPos({
-      playPause: gridPos(0, 0),
-      bpm: gridPos(1, 0),
-      volume: gridPos(2, 0),
-      share: gridPos(3, 0),
-    });
-
-    // Rows 1-3: drum pads in 4x4 grid. Overflow pads continue below while still snapping to columns.
-    // Use deterministic ordering so repeated organizes always land in the same slots.
-    const sortedPads = [...pads].sort((a, b) =>
-      a.id.localeCompare(b.id, undefined, { numeric: true, sensitivity: "base" }),
+    const sorted = [...pads].sort((a, b) =>
+      a.color.label.localeCompare(b.color.label, undefined, { sensitivity: "base" }),
     );
-    sortedPads.forEach((pad, i) => {
-      const inPrimaryGrid = i < PAD_GRID_SLOTS;
-      const slot = inPrimaryGrid ? i : i - PAD_GRID_SLOTS;
-      const col = slot % GRID_COLS;
-      const row = inPrimaryGrid
-        ? PAD_GRID_START_ROW + Math.floor(slot / GRID_COLS)
-        : GRID_ROWS + Math.floor(slot / GRID_COLS);
-      const pos = gridPos(col, row);
+    sorted.forEach((pad, i) => {
+      const pos = slotToPosition(i);
       movePad(pad.id, pos.x, pos.y);
     });
     endHistoryTransaction();
 
-    // Center the view on the organized grid without changing the current zoom level.
+    // Center the view on the sorted grid
     setCamera((c) => ({ x: 0, y: 0, zoom: c.zoom }));
 
-    setTimeout(() => setIsOrganizing(false), 350);
-  }, [pads, sidebarOffset]);
+    setTimeout(() => setIsSnapping(false), 350);
+  }, [pads]);
 
   return (
     <>
@@ -466,6 +419,9 @@ export function BeatCanvas() {
             transformOrigin: "0 0",
           }}
         >
+          {/* Ghost grid slots */}
+          {ghostSlots}
+
           {/* Tether line between pad and its piano roll */}
           <svg
             className="absolute pointer-events-none"
@@ -473,391 +429,128 @@ export function BeatCanvas() {
             width="0"
             height="0"
           >
-            {effectiveRollPos &&
-              (() => {
-                const pad = pads.find((p) => p.id === effectiveRollPos.padId);
-                if (!pad) return null;
-                const padCx = pad.x + pad.size / 2;
-                const padCy = pad.y + pad.size / 2;
-                const prAx = effectiveRollPos.x;
-                const prAy = effectiveRollPos.y + 20;
-                const midX = (padCx + prAx) / 2;
-                return (
-                  <g>
-                    <path
-                      d={`M ${padCx} ${padCy} C ${midX} ${padCy} ${midX} ${prAy} ${prAx} ${prAy}`}
-                      stroke={pad.color.glow}
-                      strokeOpacity={0.25}
-                      strokeWidth={2}
-                      strokeDasharray="6 4"
-                      fill="none"
-                    />
-                    <circle cx={padCx} cy={padCy} r={4} fill={pad.color.glow} fillOpacity={0.4} />
-                    <circle cx={prAx} cy={prAy} r={4} fill={pad.color.glow} fillOpacity={0.4} />
-                  </g>
-                );
-              })()}
-          </svg>
-
-          {pads.map((pad, i) => (
-            <div
-              key={pad.id}
-              className="beat-pad group/pad absolute rounded-xl cursor-pointer transition-shadow"
-              style={{
-                left: pad.x,
-                top: pad.y,
-                width: pad.size,
-                height: pad.size,
-                backgroundColor: pad.color.bg,
-                opacity: pad.muted ? 0.35 : 1,
-                boxShadow:
-                  activePad === pad.id
-                    ? `0 2px 4px rgba(0,0,0,0.3), inset 0 0 20px ${pad.color.glow}60, inset 0 2px 6px rgba(0,0,0,0.3)`
-                    : `0 4px 8px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.25), inset 0 1px 0 ${pad.color.glow}20, inset 0 -1px 0 rgba(0,0,0,0.2)`,
-                zIndex: i + 1,
-                transition: isOrganizing
-                  ? "left 0.3s ease, top 0.3s ease, opacity 0.15s ease, box-shadow 0.2s ease"
-                  : "opacity 0.15s ease, box-shadow 0.2s ease",
-              }}
-              onMouseDown={(e) => {
-                handlePadTap(pad.id);
-                handlePadDragStart(e, pad.id);
-              }}
-              onClick={(e) => {
-                if ((e.target as HTMLElement).closest("button")) return;
-                if (padDraggedRef.current) {
-                  padDraggedRef.current = false;
-                  padPointerDownRef.current = null;
-                  return;
-                }
-                if (e.detail !== 1) return;
-                if (singleClickTimerRef.current !== null) {
-                  window.clearTimeout(singleClickTimerRef.current);
-                }
-                singleClickTimerRef.current = window.setTimeout(() => {
-                  handleToggleMute(pad.id);
-                  singleClickTimerRef.current = null;
-                }, 200);
-              }}
-              onDoubleClick={() => {
-                if (singleClickTimerRef.current !== null) {
-                  window.clearTimeout(singleClickTimerRef.current);
-                  singleClickTimerRef.current = null;
-                }
-                handleOpenPianoRoll(pad.id);
-              }}
-            >
-              {/* Action button drawer — slides up from bottom on hover */}
-              <div className="absolute bottom-1.5 left-0 right-0 flex justify-center gap-1.5 z-[3] opacity-0 translate-y-1 group-hover/pad:opacity-100 group-hover/pad:translate-y-0 transition-all duration-150 ease-out">
-                {/* Piano roll */}
-                {!hasPianoRoll(pad.id) && (
-                  <button
-                    className="w-[22px] h-[22px] rounded-md text-white/60 hover:text-white text-xs flex items-center justify-center cursor-pointer transition-colors"
-                    style={{ backgroundColor: "#111118", boxShadow: "0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)" }}
-                    onMouseDown={(e) => {
-                      e.stopPropagation();
-                      handleOpenPianoRoll(pad.id);
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    title="Open piano roll"
-                  >
-                    &#9835;
-                  </button>
-                )}
-                {/* Remove */}
-                <button
-                  className="w-[22px] h-[22px] rounded-md text-white/60 hover:bg-red-600 hover:text-white text-sm flex items-center justify-center cursor-pointer transition-colors"
-                  style={{ backgroundColor: "#111118", boxShadow: "0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)" }}
-                  onMouseDown={(e) => handleRemovePad(pad.id, e)}
-                  onClick={(e) => e.stopPropagation()}
-                  title="Remove pad"
-                >
-                  &times;
-                </button>
-              </div>
-              <div className="w-full h-full flex flex-col items-center justify-center gap-1 relative z-[2]">
-                <span
-                  className="text-sm font-bold uppercase tracking-wider"
-                  style={{ color: pad.color.glow, textShadow: `0 1px 3px rgba(0,0,0,0.5), 0 0 8px ${pad.color.glow}30` }}
-                >
-                  {pad.color.label}
-                </span>
-              </div>
-              {/* Pulse overlay */}
-              {activePad === pad.id && (
-                <div
-                  className="absolute inset-0 rounded-xl animate-ping-once"
-                  style={{ backgroundColor: `${pad.color.glow}30` }}
-                />
-              )}
-            </div>
-          ))}
-
-          {/* Transport pad (play/pause toggle) */}
-          <div
-            className="beat-pad absolute rounded-xl cursor-pointer transition-shadow"
-            style={{
-              left: transportPos.playPause.x,
-              top: transportPos.playPause.y,
-              width: PAD_SIZE,
-              height: PAD_SIZE,
-              backgroundColor: TRANSPORT_COLOR.bg,
-              boxShadow: isPlaying
-                ? `0 2px 4px rgba(0,0,0,0.3), inset 0 0 16px ${TRANSPORT_COLOR.glow}30, inset 0 2px 4px rgba(0,0,0,0.25)`
-                : `0 4px 8px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.25), inset 0 1px 0 ${TRANSPORT_COLOR.glow}15, inset 0 -1px 0 rgba(0,0,0,0.2)`,
-              zIndex: pads.length + 10,
-              ...(isOrganizing && { transition: "left 0.3s ease, top 0.3s ease" }),
-            }}
-            onMouseDown={(e) => handleTransportDragStart(e, "playPause")}
-            onClick={async () => {
-              const { play, stop } = await getAudioEngine();
-              if (isPlaying) {
-                stop();
-              } else {
-                await play();
-              }
-            }}
-          >
-            <div className="w-full h-full flex items-center justify-center relative z-[2]">
-              {isPlaying ? (
-                <svg width="36" height="36" viewBox="0 0 24 24" fill={TRANSPORT_COLOR.glow} style={{ filter: `drop-shadow(0 1px 2px rgba(0,0,0,0.4))` }}>
-                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
-                </svg>
-              ) : (
-                <svg width="36" height="36" viewBox="0 0 24 24" fill={TRANSPORT_COLOR.glow} style={{ filter: `drop-shadow(0 1px 2px rgba(0,0,0,0.4))` }}>
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              )}
-            </div>
-          </div>
-
-          {/* BPM pad */}
-          <div
-            className="beat-pad absolute rounded-xl cursor-pointer transition-shadow"
-            style={{
-              left: transportPos.bpm.x,
-              top: transportPos.bpm.y,
-              width: PAD_SIZE,
-              height: PAD_SIZE,
-              backgroundColor: CONTROL_COLOR.bg,
-              boxShadow: `0 4px 8px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.25), inset 0 1px 0 ${CONTROL_COLOR.glow}15, inset 0 -1px 0 rgba(0,0,0,0.2)`,
-              zIndex: pads.length + 10,
-              ...(isOrganizing && { transition: "left 0.3s ease, top 0.3s ease" }),
-            }}
-            onMouseDown={(e) => handleTransportDragStart(e, "bpm")}
-          >
-            <div className="w-full h-full flex flex-col items-center justify-center gap-1 relative z-[2]">
-              <span className="text-[10px] uppercase tracking-widest" style={{ color: `${CONTROL_COLOR.glow}90`, textShadow: "0 1px 2px rgba(0,0,0,0.4)" }}>
-                BPM
-              </span>
-              <span className="text-2xl font-bold tabular-nums" style={{ color: CONTROL_COLOR.glow, textShadow: "0 1px 3px rgba(0,0,0,0.5)" }}>
-                {bpm}
-              </span>
-              <div className="flex gap-3 mt-0.5">
-                <button
-                  className="w-7 h-7 rounded-md flex items-center justify-center text-lg font-bold cursor-pointer transition-colors"
-                  style={{ color: CONTROL_COLOR.glow, background: "rgba(255,255,255,0.06)", boxShadow: "0 1px 3px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.07)" }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); setBpm(bpm - 5); }}
-                >
-                  &minus;
-                </button>
-                <button
-                  className="w-7 h-7 rounded-md flex items-center justify-center text-lg font-bold cursor-pointer transition-colors"
-                  style={{ color: CONTROL_COLOR.glow, background: "rgba(255,255,255,0.06)", boxShadow: "0 1px 3px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.07)" }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); setBpm(bpm + 5); }}
-                >
-                  +
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Volume pad */}
-          <div
-            className="beat-pad absolute rounded-xl cursor-pointer transition-shadow"
-            style={{
-              left: transportPos.volume.x,
-              top: transportPos.volume.y,
-              width: PAD_SIZE,
-              height: PAD_SIZE,
-              backgroundColor: CONTROL_COLOR.bg,
-              boxShadow: `0 4px 8px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.25), inset 0 1px 0 ${CONTROL_COLOR.glow}15, inset 0 -1px 0 rgba(0,0,0,0.2)`,
-              zIndex: pads.length + 10,
-              ...(isOrganizing && { transition: "left 0.3s ease, top 0.3s ease" }),
-            }}
-            onMouseDown={(e) => handleTransportDragStart(e, "volume")}
-          >
-            <div className="w-full h-full flex flex-col items-center justify-center gap-1 relative z-[2]">
-              <span className="text-[10px] uppercase tracking-widest" style={{ color: `${CONTROL_COLOR.glow}90`, textShadow: "0 1px 2px rgba(0,0,0,0.4)" }}>
-                VOL
-              </span>
-              <span className="text-2xl font-bold tabular-nums" style={{ color: CONTROL_COLOR.glow, textShadow: "0 1px 3px rgba(0,0,0,0.5)" }}>
-                {volume}
-              </span>
-              <div className="flex gap-3 mt-0.5">
-                <button
-                  className="w-7 h-7 rounded-md flex items-center justify-center text-lg font-bold cursor-pointer transition-colors"
-                  style={{ color: CONTROL_COLOR.glow, background: "rgba(255,255,255,0.06)", boxShadow: "0 1px 3px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.07)" }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); setVolume(volume - 5); }}
-                >
-                  &minus;
-                </button>
-                <button
-                  className="w-7 h-7 rounded-md flex items-center justify-center text-lg font-bold cursor-pointer transition-colors"
-                  style={{ color: CONTROL_COLOR.glow, background: "rgba(255,255,255,0.06)", boxShadow: "0 1px 3px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.07)" }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); setVolume(volume + 5); }}
-                >
-                  +
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Share pad */}
-          <div
-            className="beat-pad absolute rounded-xl cursor-pointer transition-shadow"
-            style={{
-              left: transportPos.share.x,
-              top: transportPos.share.y,
-              width: PAD_SIZE,
-              height: PAD_SIZE,
-              backgroundColor: SHARE_COLOR.bg,
-              boxShadow: isSaving
-                ? `0 2px 4px rgba(0,0,0,0.3), inset 0 0 16px ${SHARE_COLOR.glow}30, inset 0 2px 4px rgba(0,0,0,0.25)`
-                : `0 4px 8px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.25), inset 0 1px 0 ${SHARE_COLOR.glow}15, inset 0 -1px 0 rgba(0,0,0,0.2)`,
-              zIndex: pads.length + 10,
-              ...(isOrganizing && { transition: "left 0.3s ease, top 0.3s ease" }),
-            }}
-            onMouseDown={(e) => handleTransportDragStart(e, "share")}
-            onClick={handleShareClick}
-          >
-            <div className="w-full h-full flex flex-col items-center justify-center gap-1 relative z-[2]">
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={SHARE_COLOR.glow} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.4))" }}>
-                <circle cx="18" cy="5" r="3" />
-                <circle cx="6" cy="12" r="3" />
-                <circle cx="18" cy="19" r="3" />
-                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
-                <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
-              </svg>
-              <span
-                className="text-[10px] uppercase tracking-widest"
-                style={{ color: SHARE_COLOR.glow, textShadow: "0 1px 2px rgba(0,0,0,0.4)" }}
-              >
-                {isSaving ? "Saving..." : "Share"}
-              </span>
-            </div>
-          </div>
-
-          {/* Piano roll (single) */}
-          {effectiveRollPos &&
-            (() => {
-              const pad = pads.find((p) => p.id === effectiveRollPos.padId);
-              if (!pad) return null;
+            {effectiveRollPos && activeRollPad && (() => {
+              const padCx = activeRollPad.x + activeRollPad.size / 2;
+              const padCy = activeRollPad.y + activeRollPad.size / 2;
+              const prAx = effectiveRollPos.x;
+              const prAy = effectiveRollPos.y + 20;
+              const midX = (padCx + prAx) / 2;
               return (
-                <PianoRoll
-                  key={effectiveRollPos.padId}
-                  x={effectiveRollPos.x}
-                  y={effectiveRollPos.y}
-                  zIndex={pads.length + 20}
-                  padLabel={pad.color.label}
-                  padBg={pad.color.bg}
-                  padGlow={pad.color.glow}
-                  notes={padNotes.get(effectiveRollPos.padId) ?? new Set()}
-                  onToggleNote={handleToggleNote}
-                  onTitleBarMouseDown={handlePianoRollDragStart}
-                  onClose={handleClosePianoRoll}
-                  currentStep={currentStep}
-                  isPlaying={isPlaying}
-                  bpm={bpm}
-                  playStartedAt={playStartedAt}
-                  playStartedAtStep={playStartedAtStep}
-                />
+                <g>
+                  <path
+                    d={`M ${padCx} ${padCy} C ${midX} ${padCy} ${midX} ${prAy} ${prAx} ${prAy}`}
+                    stroke={activeRollPad.color.glow}
+                    strokeOpacity={0.25}
+                    strokeWidth={2}
+                    strokeDasharray="6 4"
+                    fill="none"
+                  />
+                  <circle cx={padCx} cy={padCy} r={4} fill={activeRollPad.color.glow} fillOpacity={0.4} />
+                  <circle cx={prAx} cy={prAy} r={4} fill={activeRollPad.color.glow} fillOpacity={0.4} />
+                </g>
               );
             })()}
+          </svg>
+
+          {pads.map((pad, i) => {
+            const isDraggingThis = dragging?.type === "pad" && dragging.id === pad.id;
+            return (
+              <div
+                key={pad.id}
+                className="beat-pad group/pad absolute rounded-xl cursor-pointer transition-shadow"
+                style={{
+                  left: pad.x,
+                  top: pad.y,
+                  width: pad.size,
+                  height: pad.size,
+                  backgroundColor: pad.color.bg,
+                  border: `2px solid ${pad.color.bg}80`,
+                  opacity: pad.muted ? 0.35 : 1,
+                  boxShadow: `0 4px 8px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.25), inset 0 1px 0 ${pad.color.glow}20, inset 0 -1px 0 rgba(0,0,0,0.2)`,
+                  zIndex: isDraggingThis ? 999 : i + 1,
+                  transition: isSnapping && !isDraggingThis
+                    ? "left 0.18s ease-out, top 0.18s ease-out, opacity 0.15s ease"
+                    : "opacity 0.15s ease",
+                }}
+                onMouseDown={(e) => {
+                  handlePadDragStart(e, pad.id);
+                }}
+                onClick={(e) => {
+                  if ((e.target as HTMLElement).closest("button")) return;
+                  if (padDraggedRef.current) {
+                    padDraggedRef.current = false;
+                    padPointerDownRef.current = null;
+                    return;
+                  }
+                  if (e.detail !== 1) return;
+                  handleToggleMute(pad.id);
+                }}
+                onDoubleClick={() => {
+                  // Undo the mute toggle from the first click of the double-click
+                  handleToggleMute(pad.id);
+                  handleOpenPianoRoll(pad.id);
+                }}
+              >
+                {/* Action button drawer */}
+                <div className="absolute bottom-1.5 left-0 right-0 flex justify-center gap-1.5 z-[3] opacity-0 translate-y-1 group-hover/pad:opacity-100 group-hover/pad:translate-y-0 transition-all duration-150 ease-out">
+                  {!hasPianoRoll(pad.id) && (
+                    <button
+                      className="w-[22px] h-[22px] rounded-md text-white/60 hover:text-white text-xs flex items-center justify-center cursor-pointer transition-colors"
+                      style={{ backgroundColor: "#111118", boxShadow: "0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)" }}
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        handleOpenPianoRoll(pad.id);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      title="Open piano roll"
+                    >
+                      &#9835;
+                    </button>
+                  )}
+                  <button
+                    className="w-[22px] h-[22px] rounded-md text-white/60 hover:bg-red-600 hover:text-white text-sm flex items-center justify-center cursor-pointer transition-colors"
+                    style={{ backgroundColor: "#111118", boxShadow: "0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)" }}
+                    onMouseDown={(e) => handleRemovePad(pad.id, e)}
+                    onClick={(e) => e.stopPropagation()}
+                    title="Remove pad"
+                  >
+                    &times;
+                  </button>
+                </div>
+                <div className="w-full h-full flex flex-col items-center justify-center gap-1 relative z-[2]">
+                  <span
+                    className="text-sm font-bold uppercase tracking-wider"
+                    style={{ color: pad.color.glow, textShadow: `0 1px 3px rgba(0,0,0,0.5), 0 0 8px ${pad.color.glow}30` }}
+                  >
+                    {pad.color.label}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Piano roll (single) */}
+          {effectiveRollPos && activeRollPad && (
+            <PianoRoll
+              key={effectiveRollPos.padId}
+              x={effectiveRollPos.x}
+              y={effectiveRollPos.y}
+              zIndex={pads.length + 20}
+              padLabel={activeRollPad.color.label}
+              padBg={activeRollPad.color.bg}
+              padGlow={activeRollPad.color.glow}
+              notes={padNotes.get(effectiveRollPos.padId) ?? new Set()}
+              onToggleNote={handleToggleNote}
+              onTitleBarMouseDown={handlePianoRollDragStart}
+              onClose={handleClosePianoRoll}
+              currentStep={currentStep}
+              isPlaying={isPlaying}
+            />
+          )}
         </div>
       </div>
 
-      {/* Share dialog — portalled to body to escape CSS transforms that break dialog centering */}
-      {mounted &&
-        createPortal(
-          <dialog
-            ref={shareDialogRef}
-            className="backdrop:bg-black/60 bg-[#1a1625] text-white rounded-2xl border border-white/10 p-0 w-[380px] max-w-[90vw] shadow-2xl m-auto"
-            onClick={(e) => {
-              if (e.target === shareDialogRef.current) shareDialogRef.current?.close();
-            }}
-          >
-            <div className="p-6 flex flex-col gap-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold tracking-wide" style={{ color: TRANSPORT_COLOR.glow }}>
-                  Share Soundboard
-                </h2>
-                <button
-                  onClick={() => shareDialogRef.current?.close()}
-                  className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/60 hover:text-white transition-colors cursor-pointer"
-                >
-                  &times;
-                </button>
-              </div>
-
-              <div>
-                <label className="text-xs uppercase tracking-widest text-white/40 mb-1 block">Name</label>
-                <input
-                  type="text"
-                  value={shareName}
-                  onChange={(e) => setShareName(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30"
-                  placeholder="My Beat"
-                />
-              </div>
-
-              {shareUrl ? (
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs uppercase tracking-widest text-white/40">Share Link</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      readOnly
-                      value={shareUrl}
-                      className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white/80 font-mono truncate focus:outline-none"
-                    />
-                    <button
-                      onClick={handleCopyLink}
-                      className="px-4 py-2 rounded-lg font-medium text-sm cursor-pointer transition-colors"
-                      style={{
-                        backgroundColor: copied ? "#059669" : TRANSPORT_COLOR.bg,
-                        color: TRANSPORT_COLOR.glow,
-                        border: `1px solid ${TRANSPORT_COLOR.glow}40`,
-                      }}
-                    >
-                      {copied ? "Copied!" : "Copy"}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  onClick={handleShareClick}
-                  disabled={isSaving || !shareName.trim()}
-                  className="w-full py-2.5 rounded-lg font-medium text-sm cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                  style={{
-                    backgroundColor: TRANSPORT_COLOR.bg,
-                    color: TRANSPORT_COLOR.glow,
-                    border: `1px solid ${TRANSPORT_COLOR.glow}40`,
-                  }}
-                >
-                  {isSaving ? "Saving..." : "Save & Get Link"}
-                </button>
-              )}
-            </div>
-          </dialog>,
-          document.body,
-        )}
-
-      {/* HUD: zoom + organize */}
+      {/* HUD: zoom + sort + undo/redo */}
       <div
         className="fixed bottom-4 left-4 z-50 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/50 backdrop-blur-sm border border-white/10"
         style={{ boxShadow: "0 3px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)" }}
@@ -879,11 +572,24 @@ export function BeatCanvas() {
         </button>
         <div className="w-px h-4 bg-white/15 mx-1" />
         <button
-          onClick={handleOrganize}
+          onClick={() => {
+            const gridCenterX = (GRID_COLS * CELL) / 2;
+            const gridCenterY = (Math.max(2, Math.ceil(pads.length / GRID_COLS)) * CELL) / 2;
+            setCamera({ x: -gridCenterX, y: -gridCenterY, zoom: 1 });
+            hasUserPositionedView.current = false;
+          }}
           className="text-xs text-white/70 hover:text-white transition-colors cursor-pointer px-1"
-          title="Organize pads into a grid"
+          title="Center view"
         >
-          Organize
+          Center
+        </button>
+        <div className="w-px h-4 bg-white/15 mx-1" />
+        <button
+          onClick={handleSort}
+          className="text-xs text-white/70 hover:text-white transition-colors cursor-pointer px-1"
+          title="Sort pads alphabetically into the grid"
+        >
+          Sort
         </button>
         <div className="w-px h-4 bg-white/15 mx-1" />
         <button

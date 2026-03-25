@@ -99,16 +99,17 @@ const MessageSuggestions = React.forwardRef<
       error,
     } = useTamboSuggestions({ maxSuggestions });
 
-    // Combine initial and generated suggestions, but only use initial ones when thread is empty
+    // Use generated suggestions when available, fall back to initial suggestions
     const suggestions = React.useMemo(() => {
-      // Only use pre-seeded suggestions if thread is empty
-      if (!messages.length && initialSuggestions.length > 0) {
+      if (generatedSuggestions.length > 0) {
+        return generatedSuggestions;
+      }
+      // Fall back to initial suggestions when generated ones aren't available
+      if (initialSuggestions.length > 0) {
         return initialSuggestions.slice(0, maxSuggestions);
       }
-      // Otherwise use generated suggestions
-      return generatedSuggestions;
+      return [];
     }, [
-      messages.length,
       generatedSuggestions,
       initialSuggestions,
       maxSuggestions,

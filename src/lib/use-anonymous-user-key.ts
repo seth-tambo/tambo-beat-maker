@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 
 const STORAGE_KEY = "tambo-anonymous-user-key";
 
@@ -25,12 +25,6 @@ export function useAnonymousUserKey(): string {
     localStorage.setItem(STORAGE_KEY, newKey);
     return newKey;
   });
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(STORAGE_KEY, userKey);
-    }
-  }, [userKey]);
 
   return userKey;
 }

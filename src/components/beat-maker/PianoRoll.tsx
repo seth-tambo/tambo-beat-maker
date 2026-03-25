@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useCallback, useState, useEffect } from "react";
+import { useRef, useCallback, useEffect } from "react";
 import type { MouseEvent } from "react";
 
 const NOTES = (() => {
@@ -34,40 +34,6 @@ interface PianoRollProps {
   onClose: () => void;
   currentStep: number;
   isPlaying: boolean;
-  bpm: number;
-  playStartedAt: number | null;
-  playStartedAtStep: number;
-}
-
-function usePlayheadPosition(
-  isPlaying: boolean,
-  bpm: number,
-  playStartedAt: number | null,
-  playStartedAtStep: number,
-) {
-  const [position, setPosition] = useState(0);
-  const rafRef = useRef<number>(0);
-
-  useEffect(() => {
-    if (!isPlaying || playStartedAt === null) {
-      rafRef.current && cancelAnimationFrame(rafRef.current);
-      return;
-    }
-
-    const stepsPerMs = (bpm / 60) * 4 / 1000; // 16th notes per ms
-
-    function tick() {
-      const elapsed = Date.now() - playStartedAt!;
-      const pos = (playStartedAtStep + elapsed * stepsPerMs) % STEPS;
-      setPosition(pos);
-      rafRef.current = requestAnimationFrame(tick);
-    }
-
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [isPlaying, bpm, playStartedAt, playStartedAtStep]);
-
-  return position;
 }
 
 export function PianoRoll({
@@ -83,11 +49,8 @@ export function PianoRoll({
   onClose,
   currentStep,
   isPlaying,
-  bpm,
-  playStartedAt,
-  playStartedAtStep,
 }: PianoRollProps) {
-  const playheadPos = usePlayheadPosition(isPlaying, bpm, playStartedAt, playStartedAtStep);
+  const playheadStep = isPlaying ? currentStep : -1;
   const gridRef = useRef<HTMLDivElement>(null);
   const keysRef = useRef<HTMLDivElement>(null);
 
@@ -193,12 +156,12 @@ export function PianoRoll({
           <div style={{ width: STEPS * CELL_W, minWidth: "100%", position: "relative" }}>
             {/* Playhead overlay */}
             <div
-              className="absolute top-0 pointer-events-none"
-              style={{
-                left: playheadPos * CELL_W,
-                width: CELL_W,
-                height: NOTES.length * CELL_H,
-                backgroundColor: isPlaying ? `${padGlow}12` : "transparent",
+                className="absolute top-0 pointer-events-none"
+                style={{
+                 left: playheadStep * CELL_W,
+                 width: CELL_W,
+                 height: NOTES.length * CELL_H,
+                 backgroundColor: isPlaying ? `${padGlow}12` : "transparent",
                 borderLeft: isPlaying ? `2px solid ${padGlow}` : "none",
                 zIndex: 10,
               }}
@@ -209,7 +172,7 @@ export function PianoRoll({
                   const cellKey = `${note}-${step}`;
                   const isActive = notes.has(cellKey);
                   const isBeatBorder = (step + 1) % 4 === 0;
-                  const isPlayheadHere = isPlaying && step === currentStep;
+                  const isPlayheadHere = isPlaying && step === playheadStep;
                   return (
                     <div
                       key={step}
@@ -256,10 +219,10 @@ export function PianoRoll({
                   (i + 1) % 4 === 0
                     ? "border-r border-r-white/20"
                     : "border-r border-r-white/[0.07]"
-                } ${isPlaying && i === currentStep ? "font-bold" : "text-white/50"}`}
+                } ${isPlaying && i === playheadStep ? "font-bold" : "text-white/50"}`}
                 style={{
                   width: CELL_W,
-                  ...(isPlaying && i === currentStep ? { color: padGlow } : {}),
+                  ...(isPlaying && i === playheadStep ? { color: padGlow } : {}),
                 }}
               >
                 {i + 1}

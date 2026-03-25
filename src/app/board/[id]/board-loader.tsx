@@ -3,8 +3,8 @@
 import { useEffect, useRef } from "react";
 import { BeatCanvas } from "@/components/beat-maker/BeatCanvas";
 import { ChatSidebar } from "@/components/beat-maker/ChatSidebar";
-import { components, tools, contextHelpers } from "@/lib/tambo";
 import { useAnonymousUserKey } from "@/lib/use-anonymous-user-key";
+import { useLazyTamboConfig } from "@/lib/use-lazy-tambo-config";
 import { hydrateFromSoundboard } from "@/lib/canvas-store";
 import { useSoundboardAutosave } from "@/lib/use-soundboard-autosave";
 import { TamboProvider } from "@tambo-ai/react";
@@ -20,25 +20,28 @@ interface BoardLoaderProps {
 
 export function BoardLoader({ soundboard }: BoardLoaderProps) {
   const userKey = useAnonymousUserKey();
-  const hydrated = useRef(false);
+  const tamboConfig = useLazyTamboConfig({ includeContextHelpers: true });
+  const lastHydratedId = useRef<string | null>(null);
 
   useSoundboardAutosave({
     soundboardId: soundboard.id,
   });
 
   useEffect(() => {
-    if (!hydrated.current) {
+    if (lastHydratedId.current !== soundboard.id) {
       hydrateFromSoundboard(soundboard.data);
-      hydrated.current = true;
+      lastHydratedId.current = soundboard.id;
     }
-  }, [soundboard.data]);
+  }, [soundboard.id, soundboard.data]);
+
+  if (!tamboConfig) return null;
 
   return (
     <TamboProvider
       apiKey={process.env.NEXT_PUBLIC_TAMBO_API_KEY!}
-      components={components}
-      tools={tools}
-      contextHelpers={contextHelpers}
+      components={tamboConfig.components}
+      tools={tamboConfig.tools}
+      contextHelpers={tamboConfig.contextHelpers}
       tamboUrl={process.env.NEXT_PUBLIC_TAMBO_URL}
       userKey={userKey}
     >

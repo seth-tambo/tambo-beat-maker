@@ -13,15 +13,17 @@ import {
   PAD_COLORS,
   type PadColor,
 } from "@/lib/canvas-store";
+import {
+  MAX_PADS,
+  centerLeftAnchorSlot,
+  getOccupiedSlots,
+  nearestOpenSlot,
+  slotToPosition,
+} from "@/lib/grid-constants";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-const COLOR_MAP: Record<string, PadColor> = {};
-for (const c of PAD_COLORS) {
-  COLOR_MAP[c.label.toLowerCase()] = c;
-}
 
 // Default step patterns so pads make sound immediately when created
 const DEFAULT_STEPS: Record<string, number[]> = {
@@ -77,36 +79,14 @@ function resolveColor(label: string): PadColor {
 // Grid placement
 // ---------------------------------------------------------------------------
 
-const PAD_SIZE = 110;
-const GAP = 20;
-const CELL = PAD_SIZE + GAP; // 130px per grid cell
-const COLS = 4;
-const GRID_ROWS = 4;
-const PAD_START_ROW = 1;
-const MAX_PADS_IN_GRID = (GRID_ROWS - PAD_START_ROW) * COLS; // 12
-
-// Grid origin: aligned with centered transport columns (x=-250,-120,10,140),
-// first pad row sits one CELL below the transport row.
-const GRID_X = -250;
-const GRID_ROW0_Y = PAD_START_ROW * CELL; // 130 — row below transport controls
-
-/** Find the next open grid cell, scanning left→right, top→bottom. */
+/** Find the next open grid cell using shared grid constants. */
 function nextGridPosition(): { x: number; y: number } {
-  const existing = getCanvasSnapshot().pads;
-
-  for (let slot = 0; slot < MAX_PADS_IN_GRID; slot++) {
-    const col = slot % COLS;
-    const row = Math.floor(slot / COLS);
-    const cx = GRID_X + col * CELL;
-    const cy = GRID_ROW0_Y + row * CELL; // rows grow downward
-
-    const occupied = existing.some(
-      (p) => Math.abs(p.x - cx) < CELL / 2 && Math.abs(p.y - cy) < CELL / 2,
-    );
-    if (!occupied) return { x: cx, y: cy };
-  }
-
-  throw new Error("Maximum of 12 pads reached for the 4x4 organize grid.");
+  const snapshot = getCanvasSnapshot();
+  const occupied = getOccupiedSlots(snapshot.pads);
+  const occupiedSet = new Set(occupied.keys());
+  const anchorSlot = centerLeftAnchorSlot(occupiedSet);
+  const slot = nearestOpenSlot(occupiedSet, anchorSlot);
+  return slotToPosition(slot);
 }
 
 // ---------------------------------------------------------------------------
@@ -114,8 +94,8 @@ function nextGridPosition(): { x: number; y: number } {
 // ---------------------------------------------------------------------------
 
 export function createBeatPad(input: { label: string; color?: string; bank?: string }) {
-  if (getCanvasSnapshot().pads.length >= MAX_PADS_IN_GRID) {
-    throw new Error("Cannot create more than 12 pads. The board uses a strict 4x4 grid.");
+  if (getCanvasSnapshot().pads.length >= MAX_PADS) {
+    throw new Error(`Cannot create more than ${MAX_PADS} pads.`);
   }
 
   const color = input.color

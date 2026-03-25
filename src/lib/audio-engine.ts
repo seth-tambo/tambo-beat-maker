@@ -1,5 +1,5 @@
 /**
- * Strudel audio engine — class-based singleton.
+ * Strudel audio engine -- class-based singleton.
  *
  * Both React components (via StrudelProvider context) and Tambo tools
  * (which run outside React's render tree) access the same instance via
@@ -14,7 +14,9 @@
  *   - Error capture with async scheduler error wait
  *   - Revert-on-failure for pattern evaluation
  *
- * Reads pad/note/BPM state from canvas-store — never duplicates it.
+ * Supports two playback modes:
+ *   - "pads": pattern built from canvas-store pad/note state
+ *   - "code": free-form Strudel code evaluated directly (via evaluateCode)
  */
 "use client";
 
@@ -25,10 +27,13 @@ import { getSoundForLabel, DEFAULT_BANK } from "./sound-map";
 // Types
 // ---------------------------------------------------------------------------
 
+export type PlaybackMode = "pads" | "code";
+
 export interface StrudelEngineState {
   isPlaying: boolean;
   isReady: boolean;
   error: string | null;
+  mode: PlaybackMode;
 }
 
 type StateChangeCallback = (state: StrudelEngineState) => void;
@@ -46,6 +51,7 @@ export class StrudelService {
   private _initPromise: Promise<void> | null = null;
   private _isPlaying = false;
   private _lastError: string | null = null;
+  private _mode: PlaybackMode = "pads";
 
   // Strudel functions captured after dynamic import
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -54,6 +60,11 @@ export class StrudelService {
 
   // Debounce timer for live pattern updates
   private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  // Last evaluated pattern code -- skip evaluate when unchanged
+  private _lastPatternCode: string | null = null;
+
+  // Free-form code state (for evaluateCode / revert-on-failure)
+  private _freeformCode: string | null = null;
 
   // Canvas store subscription teardown
   private unsubscribeFromStore: (() => void) | null = null;
@@ -69,7 +80,7 @@ export class StrudelService {
   // Singleton access
   // ---------------------------------------------------------------------------
 
-  private constructor() {} // Private — use .instance()
+  private constructor() {} // Private -- use .instance()
 
   static instance(): StrudelService {
     if (!StrudelService._instance) {
@@ -94,11 +105,16 @@ export class StrudelService {
     return this._lastError;
   }
 
+  get mode(): PlaybackMode {
+    return this._mode;
+  }
+
   getEngineState(): StrudelEngineState {
     return {
       isPlaying: this._isPlaying,
       isReady: this.isAudioInitialized,
       error: this._lastError,
+      mode: this._mode,
     };
   }
 
@@ -123,7 +139,7 @@ export class StrudelService {
   // ---------------------------------------------------------------------------
   // Initialization
   // All Strudel modules are dynamically imported to keep the bundle small.
-  // This is CRITICAL — Strudel is large and must not be in the initial bundle.
+  // This is CRITICAL -- Strudel is large and must not be in the initial bundle.
   // ---------------------------------------------------------------------------
 
   /**
@@ -150,29 +166,104 @@ export class StrudelService {
       const CDN = "https://strudel.b-cdn.net";
 
       // initStrudel():
-      //  1. Calls initAudioOnFirstClick() — registers a document mousedown
+      //  1. Calls initAudioOnFirstClick() -- registers a document mousedown
       //     listener that resumes the AudioContext on the user's next click
       //  2. Creates the webaudio REPL (scheduler + output)
-      //  3. Runs defaultPrebake() — loads synth sounds
-      //  4. Runs our custom prebake (inline below) — loads drum samples from CDN
+      //  3. Runs defaultPrebake() -- loads synth sounds + evalScope (core, mini, tonal, webaudio)
+      //  4. Runs our custom prebake (inline below) -- loads samples from CDN
       //
       // CRITICAL: samples() and aliasBank() MUST come from the same `strudel`
       // import that owns initStrudel. @strudel/web bundles its own internal
-      // superdough — any separate import (even of @strudel/web itself from
+      // superdough -- any separate import (even of @strudel/web itself from
       // another file) can create a second module instance with a disconnected
       // sample registry.
       await strudel.initStrudel({
         prebake: async () => {
+          // --- Drum machines + aliases (core sounds) ---
           await strudel.samples(
             `${CDN}/tidal-drum-machines.json`,
             `${CDN}/tidal-drum-machines/machines/`,
             { prebake: true, tag: "drum-machines" },
           );
           await strudel.aliasBank(`${CDN}/tidal-drum-machines-alias.json`);
-          console.log("[prebake] drum samples + aliases loaded");
+
+          // --- ZZFX procedural synth sounds (no download, instant) ---
+          // registerZZFXSounds is exported at runtime but missing from type defs
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if (typeof (strudel as any).registerZZFXSounds === "function") {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await (strudel as any).registerZZFXSounds();
+          }
+
+          // --- Piano samples (enables melodic patterns) ---
+          await strudel.samples(
+            `${CDN}/piano.json`,
+            `${CDN}/piano/`,
+            { prebake: true },
+          );
+
+          // --- Dirt samples (ambient, textural variety) ---
+          await strudel.samples(
+            {
+              casio: ["casio/high.wav", "casio/low.wav", "casio/noise.wav"],
+              crow: ["crow/000_crow.wav", "crow/001_crow2.wav", "crow/002_crow3.wav", "crow/003_crow4.wav"],
+              insect: [
+                "insect/000_everglades_conehead.wav",
+                "insect/001_robust_shieldback.wav",
+                "insect/002_seashore_meadow_katydid.wav",
+              ],
+              wind: [
+                "wind/000_wind1.wav", "wind/001_wind10.wav", "wind/002_wind2.wav",
+                "wind/003_wind3.wav", "wind/004_wind4.wav", "wind/005_wind5.wav",
+                "wind/006_wind6.wav", "wind/007_wind7.wav", "wind/008_wind8.wav",
+                "wind/009_wind9.wav",
+              ],
+              jazz: [
+                "jazz/000_BD.wav", "jazz/001_CB.wav", "jazz/002_FX.wav",
+                "jazz/003_HH.wav", "jazz/004_OH.wav", "jazz/005_P1.wav",
+                "jazz/006_P2.wav", "jazz/007_SN.wav",
+              ],
+              metal: [
+                "metal/000_0.wav", "metal/001_1.wav", "metal/002_2.wav",
+                "metal/003_3.wav", "metal/004_4.wav", "metal/005_5.wav",
+                "metal/006_6.wav", "metal/007_7.wav", "metal/008_8.wav",
+                "metal/009_9.wav",
+              ],
+              east: [
+                "east/000_nipon_wood_block.wav", "east/001_ohkawa_mute.wav",
+                "east/002_ohkawa_open.wav", "east/003_shime_hi.wav",
+                "east/004_shime_hi_2.wav", "east/005_shime_mute.wav",
+                "east/006_taiko_1.wav", "east/007_taiko_2.wav", "east/008_taiko_3.wav",
+              ],
+              space: [
+                "space/000_0.wav", "space/001_1.wav", "space/002_11.wav",
+                "space/003_12.wav", "space/004_13.wav", "space/005_14.wav",
+                "space/006_15.wav", "space/007_16.wav", "space/008_17.wav",
+                "space/009_18.wav", "space/010_2.wav", "space/011_3.wav",
+                "space/012_4.wav", "space/013_5.wav", "space/014_6.wav",
+                "space/015_7.wav", "space/016_8.wav", "space/017_9.wav",
+              ],
+            },
+            `${CDN}/Dirt-Samples/`,
+            { prebake: true },
+          );
+
+          console.log("[prebake] core samples loaded (drums, piano, dirt, zzfx)");
         },
       });
       console.log("[StrudelService] initStrudel complete");
+
+      // --- Lazy-load extended sample libraries (non-blocking) ---
+      Promise.all([
+        strudel.samples(`${CDN}/vcsl.json`, `${CDN}/VCSL/`, { prebake: true }),
+        strudel.samples(`${CDN}/uzu-drumkit.json`, `${CDN}/uzu-drumkit/`, { prebake: true, tag: "drum-machines" }),
+        strudel.samples(`${CDN}/uzu-wavetables.json`, `${CDN}/uzu-wavetables/`, { prebake: true }),
+        strudel.samples(`${CDN}/mridangam.json`, `${CDN}/mrid/`, { prebake: true, tag: "drum-machines" }),
+      ]).then(() => {
+        console.log("[prebake] extended samples loaded (vcsl, uzu, mridangam)");
+      }).catch((err) => {
+        console.warn("[prebake] some extended samples failed to load:", err);
+      });
 
       // Capture functions from the ES module exports
       // Bind to the module object because Strudel's functions rely on internal context.
@@ -180,7 +271,7 @@ export class StrudelService {
       this._hush = strudel.hush.bind(strudel);
 
       console.log(
-        "[StrudelService] captured functions — evaluate:",
+        "[StrudelService] captured functions -- evaluate:",
         typeof this._evaluate,
         "hush:",
         typeof this._hush,
@@ -194,9 +285,10 @@ export class StrudelService {
       this.notifyStateChange();
 
       // Subscribe to canvas-store changes for live pattern updates.
+      // Skip rebuilds when in "code" mode (free-form patterns own playback).
       // Stop immediately when nothing is playable (no pads); debounce otherwise.
       this.unsubscribeFromStore = subscribe(() => {
-        if (!this._isPlaying) return;
+        if (!this._isPlaying || this._mode === "code") return;
         if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
 
         const { pads } = getState();
@@ -205,7 +297,7 @@ export class StrudelService {
           return;
         }
 
-        this.rebuildTimer = setTimeout(() => this.rebuildAndPlay(), 100);
+        this.rebuildTimer = setTimeout(() => this.rebuildAndPlay(), 16);
       });
     } catch (err) {
       console.error("[StrudelService] Failed to preload Strudel:", err);
@@ -364,6 +456,7 @@ export class StrudelService {
 
   /**
    * Build the pattern from canvas state, evaluate it, and start playback.
+   * Switches to "pads" mode, cancelling any active code-mode playback.
    * If preload hasn't been called yet (e.g. tool invocation), does it now.
    */
   async play(): Promise<boolean> {
@@ -372,6 +465,10 @@ export class StrudelService {
       console.error("[StrudelService] Failed to initialize, cannot play");
       return false;
     }
+
+    // Switch to pads mode -- code-mode playback is superseded
+    this._mode = "pads";
+    this._freeformCode = null;
 
     const code = this.buildPatternCode();
     console.log("[StrudelService] pattern code:", code);
@@ -385,7 +482,7 @@ export class StrudelService {
 
       // Strudel v1.3.0 has an operator-precedence bug that prevents
       // initAudioOnFirstClick from ever calling AudioContext.resume().
-      // Work around it by resuming manually — play() is always called
+      // Work around it by resuming manually -- play() is always called
       // from a user-gesture handler so the browser will allow it.
       await this.resumeAudioContext();
 
@@ -405,6 +502,7 @@ export class StrudelService {
 
   stop(): void {
     this._isPlaying = false;
+    this._lastPatternCode = null;
     if (this._hush) this._hush();
     if (this.rebuildTimer) {
       clearTimeout(this.rebuildTimer);
@@ -416,10 +514,11 @@ export class StrudelService {
 
   /**
    * Rebuild and hot-swap the pattern while playing.
-   * Called on canvas-store changes (debounced 100ms).
+   * Called on canvas-store changes (debounced). Skipped in code mode.
    */
   async rebuildAndPlay(): Promise<void> {
-    if (!this._isPlaying || !this.isAudioInitialized || !this._evaluate) return;
+    if (!this._isPlaying || this._mode === "code") return;
+    if (!this.isAudioInitialized || !this._evaluate) return;
 
     const code = this.buildPatternCode();
     if (!code) {
@@ -427,12 +526,98 @@ export class StrudelService {
       return;
     }
 
+    if (code === this._lastPatternCode) return;
+
     try {
       await this.resumeAudioContext();
       await this._evaluate(code);
+      this._lastPatternCode = code;
     } catch (err) {
       console.error("[StrudelService] Failed to rebuild pattern:", err);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Free-form code evaluation (for evaluatePattern tool)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Evaluate arbitrary Strudel code and start playback.
+   * Switches to "code" mode -- pad-based playback is superseded.
+   * On failure, reverts to previous code (or stops if no previous code).
+   */
+  async evaluateCode(code: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.isAudioInitialized) await this.preload();
+    if (!this.isAudioInitialized || !this._evaluate) {
+      return { success: false, error: "Audio engine not initialized" };
+    }
+
+    const previousCode = this._freeformCode;
+    const wasPlaying = this._isPlaying;
+
+    try {
+      // Stop current playback
+      if (this._isPlaying) {
+        if (this._hush) this._hush();
+        this._isPlaying = false;
+      }
+
+      this.clearError();
+      this._mode = "code";
+
+      await this.resumeAudioContext();
+      await this._evaluate(code);
+
+      // Wait for async scheduler errors (missing samples, etc.)
+      const schedulerErr = await this.waitForSchedulerError(500);
+
+      if (schedulerErr) {
+        // Revert on scheduler error
+        await this.revertCode(previousCode, wasPlaying);
+        return {
+          success: false,
+          error: `Runtime error: ${schedulerErr.message}\n\nCode:\n${code}`,
+        };
+      }
+
+      // Success
+      this._freeformCode = code;
+      this._isPlaying = true;
+      setPlaying(true);
+      this.notifyStateChange();
+      return { success: true };
+    } catch (err) {
+      // Revert on eval error
+      const errorMsg = this.toErrorMessage(err);
+      await this.revertCode(previousCode, wasPlaying);
+      return {
+        success: false,
+        error: `Evaluation error: ${errorMsg}\n\nCode:\n${code}`,
+      };
+    }
+  }
+
+  /**
+   * Revert to previous free-form code after a failed evaluation.
+   */
+  private async revertCode(previousCode: string | null, wasPlaying: boolean): Promise<void> {
+    if (previousCode && wasPlaying && this._evaluate) {
+      try {
+        await this._evaluate(previousCode);
+        this._isPlaying = true;
+        setPlaying(true);
+      } catch {
+        // If revert also fails, just stop
+        this._isPlaying = false;
+        this._mode = "pads";
+        setPlaying(false);
+      }
+    } else {
+      this._isPlaying = false;
+      this._mode = "pads";
+      setPlaying(false);
+    }
+    this.notifyStateChange();
   }
 
   // ---------------------------------------------------------------------------
@@ -453,7 +638,7 @@ export class StrudelService {
 }
 
 // ---------------------------------------------------------------------------
-// Convenience exports — backwards-compatible module-level functions
+// Convenience exports -- backwards-compatible module-level functions
 // These delegate to the singleton so existing consumers keep working.
 // ---------------------------------------------------------------------------
 

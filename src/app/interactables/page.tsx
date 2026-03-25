@@ -11,8 +11,8 @@ import {
   ThreadContent,
   ThreadContentMessages,
 } from "@/components/tambo/thread-content";
-import { components, tools } from "@/lib/tambo";
 import { useAnonymousUserKey } from "@/lib/use-anonymous-user-key";
+import { useLazyTamboConfig } from "@/lib/use-lazy-tambo-config";
 import { TamboProvider } from "@tambo-ai/react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useState } from "react";
@@ -21,12 +21,15 @@ import { SettingsPanel } from "./components/settings-panel";
 export default function InteractablesPage() {
   const [isChatOpen, setIsChatOpen] = useState(true);
   const userKey = useAnonymousUserKey();
+  const tamboConfig = useLazyTamboConfig();
+
+  if (!tamboConfig) return null;
 
   return (
     <TamboProvider
       apiKey={process.env.NEXT_PUBLIC_TAMBO_API_KEY!}
-      components={components}
-      tools={tools}
+      components={tamboConfig.components}
+      tools={tamboConfig.tools}
       tamboUrl={process.env.NEXT_PUBLIC_TAMBO_URL}
       userKey={userKey}
     >

@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { useTamboThreadInput } from "@tambo-ai/react";
+import { checkChatTrigger, triggerMoreCowbell } from "@/lib/easter-eggs";
 import {
   MessageInput,
   MessageInputSubmitButton,
@@ -19,7 +21,10 @@ import {
 } from "@/components/tambo/thread-content";
 import type { Suggestion } from "@tambo-ai/react";
 
-const initialSuggestions: Suggestion[] = [
+// Pool of initial suggestions covering pads, genres, synths, and effects.
+// Three are picked at random on each mount so the experience feels fresh.
+const allInitialSuggestions: Suggestion[] = [
+  // --- Pad basics ---
   {
     id: "init-kick",
     title: "Add a Kick pad",
@@ -27,22 +32,97 @@ const initialSuggestions: Suggestion[] = [
     messageId: "",
   },
   {
+    id: "init-combo",
+    title: "Kick + Snare + Hi-Hat",
+    detailedSuggestion: "Add a Kick, Snare, and Hi-Hat pad to the canvas and play them",
+    messageId: "",
+  },
+  // --- Preset patterns ---
+  {
     id: "init-trap",
     title: "Load a Trap beat",
     detailedSuggestion: "Load a trap drum pattern and play it",
     messageId: "",
   },
   {
-    id: "init-combo",
-    title: "Add Snare + Hi-Hat",
-    detailedSuggestion: "Add a Snare pad and a Hi-Hat pad to the canvas",
+    id: "init-four",
+    title: "Four on the floor",
+    detailedSuggestion: "Load a four-on-the-floor house beat and play it",
+    messageId: "",
+  },
+  {
+    id: "init-funk",
+    title: "Funky breakbeat",
+    detailedSuggestion: "Load a funky breakbeat pattern and play it",
+    messageId: "",
+  },
+  // --- Genre compositions (evaluatePattern) ---
+  {
+    id: "init-lofi",
+    title: "Lo-fi hip hop vibes",
+    detailedSuggestion: "Make a lo-fi hip hop beat with jazzy piano chords, warm drums, and reverb",
+    messageId: "",
+  },
+  {
+    id: "init-synthwave",
+    title: "80s synthwave",
+    detailedSuggestion: "Play a synthwave arpeggio with filter sweep, reverb, and a driving beat",
+    messageId: "",
+  },
+  {
+    id: "init-techno",
+    title: "Minimal techno groove",
+    detailedSuggestion: "Create a dark minimal techno groove with a pulsing bass and modulated filter",
+    messageId: "",
+  },
+  {
+    id: "init-ambient",
+    title: "Ambient soundscape",
+    detailedSuggestion: "Play a dreamy ambient pad with slow filter movement and lots of reverb",
+    messageId: "",
+  },
+  {
+    id: "init-dnb",
+    title: "Drum & bass roller",
+    detailedSuggestion: "Make a drum and bass beat with a rolling bassline and fast breakbeat drums",
+    messageId: "",
+  },
+  // --- Sound exploration ---
+  {
+    id: "init-sounds",
+    title: "What sounds do you have?",
+    detailedSuggestion: "What instruments and sounds are available?",
+    messageId: "",
+  },
+  {
+    id: "init-piano",
+    title: "Piano chords",
+    detailedSuggestion: "Play a mellow piano chord progression",
     messageId: "",
   },
 ];
 
+function pickRandom<T>(arr: T[], count: number): T[] {
+  const shuffled = [...arr].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, count);
+}
+
+const initialSuggestions: Suggestion[] = pickRandom(allInitialSuggestions, 3);
+
 export function ChatSidebar() {
   const [chatMinimized, setChatMinimized] = useState(false);
   const [hasMessages, setHasMessages] = useState(false);
+  const [cowbellOverlay, setCowbellOverlay] = useState(false);
+  const { value } = useTamboThreadInput();
+
+  const handleSubmitCapture = useCallback(() => {
+    const trigger = checkChatTrigger(value);
+    if (trigger === "cowbell") {
+      void triggerMoreCowbell();
+      setCowbellOverlay(true);
+      setTimeout(() => setCowbellOverlay(false), 4000);
+    }
+  }, [value]);
 
   return (
     <div
@@ -112,13 +192,33 @@ export function ChatSidebar() {
               <MessageSuggestionsStatus />
               <MessageSuggestionsList />
             </MessageSuggestions>
-            <MessageInput className="beat-chat-input">
-              <MessageInputTextarea placeholder="Add a pad, remove one, or ask about your beat..." />
-              <MessageInputToolbar>
-                <MessageInputSubmitButton />
-              </MessageInputToolbar>
-            </MessageInput>
+            {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
+            <div onSubmitCapture={handleSubmitCapture}>
+              <MessageInput className="beat-chat-input">
+                <MessageInputTextarea placeholder="Add a pad, remove one, or ask about your beat..." />
+                <MessageInputToolbar>
+                  <MessageInputSubmitButton />
+                </MessageInputToolbar>
+              </MessageInput>
+            </div>
           </div>
+
+          {/* More Cowbell overlay */}
+          {cowbellOverlay && (
+            <div className="absolute inset-x-0 top-12 flex items-center justify-center pointer-events-none z-50 px-4">
+              <div
+                className="rounded-lg px-4 py-3 text-center cowbell-overlay"
+                style={{ background: "rgba(180, 83, 9, 0.25)", border: "1px solid rgba(245, 158, 11, 0.4)" }}
+              >
+                <p className="text-amber-300 text-sm font-bold tracking-wide">
+                  I got a fever...
+                </p>
+                <p className="text-amber-200/90 text-xs mt-1">
+                  and the only prescription is <span className="text-amber-300 font-black uppercase">more cowbell!</span>
+                </p>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
