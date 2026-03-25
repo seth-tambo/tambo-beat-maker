@@ -47,8 +47,8 @@ export function findDemoEntry(userInput: string): DemoEntry | null {
   const lower = userInput.toLowerCase().trim();
 
   for (const [trigger, builder] of DEMO_SCRIPTS) {
-    if (typeof trigger === "string" && lower.includes(trigger)) return builder();
-    if (trigger instanceof RegExp && trigger.test(lower)) return builder();
+    if (typeof trigger === "string" && lower.includes(trigger)) return builder(lower);
+    if (trigger instanceof RegExp && trigger.test(lower)) return builder(lower);
   }
 
   return null;
@@ -58,7 +58,7 @@ export function findDemoEntry(userInput: string): DemoEntry | null {
 // Scripts
 // ---------------------------------------------------------------------------
 
-const DEMO_SCRIPTS: Array<[string | RegExp, () => DemoEntry]> = [
+const DEMO_SCRIPTS: Array<[string | RegExp, (input: string) => DemoEntry]> = [
   // ── Trap beat ──────────────────────────────────────────────
   [
     /trap/i,
@@ -311,5 +311,26 @@ const DEMO_SCRIPTS: Array<[string | RegExp, () => DemoEntry]> = [
         },
       ],
     }),
+  ],
+
+  // ── Add a single pad (follow-up after initial beat) ────────
+  [
+    /add.*(clap|rim|tom|crash|shaker|tambourine|cowbell|conga|bongo|ride|perc)/i,
+    (input: string) => {
+      const m = /add.*(clap|rim|tom|crash|shaker|tambourine|cowbell|conga|bongo|ride|perc)/i.exec(input);
+      const label = m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) : "Clap";
+      return {
+        assistantMessage:
+          `Added a ${label} pad with a pattern. It's already part of the beat!`,
+        steps: [
+          {
+            delay: 500,
+            toolLabel: "createBeatPad",
+            action: async () =>
+              (await tools()).createBeatPad({ label }),
+          },
+        ],
+      };
+    },
   ],
 ];
