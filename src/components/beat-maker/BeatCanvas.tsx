@@ -661,10 +661,11 @@ export function BeatCanvas() {
 
             {/* HUD: zoom + sort + undo/redo */}
             <div
-                className="fixed bottom-4 left-4 z-50 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/50 backdrop-blur-sm border border-white/10"
+                className="fixed bottom-6 left-4 z-50 flex items-center gap-2 px-3 rounded-xl bg-black/60 backdrop-blur-md border border-white/10"
                 style={{
+                    height: 44,
                     boxShadow:
-                        '0 3px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+                        '0 4px 12px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05)'
                 }}
             >
                 <button

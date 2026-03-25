@@ -94,13 +94,13 @@ export function TransportBar() {
                     <div className="flex flex-col items-center min-w-[34px]">
                         <span
                             className="text-[9px] uppercase tracking-widest"
-                            style={{ color: `${CONTROL_COLOR.glow}70` }}
+                            style={{ color: `${CONTROL_COLOR.glow}` }}
                         >
                             VOL
                         </span>
                         <span
                             className="text-sm font-bold tabular-nums leading-none"
-                            style={{ color: CONTROL_COLOR.glow }}
+                            style={{ color: 'rgba(255,255,255,0.9)' }}
                         >
                             {volume}
                         </span>
@@ -134,13 +134,13 @@ export function TransportBar() {
                     <div className="flex flex-col items-center min-w-[40px]">
                         <span
                             className="text-[9px] uppercase tracking-widest"
-                            style={{ color: `${CONTROL_COLOR.glow}70` }}
+                            style={{ color: `${CONTROL_COLOR.glow}` }}
                         >
                             BPM
                         </span>
                         <span
                             className="text-sm font-bold tabular-nums leading-none"
-                            style={{ color: CONTROL_COLOR.glow }}
+                            style={{ color: 'rgba(255,255,255,0.9)' }}
                         >
                             {bpm}
                         </span>
